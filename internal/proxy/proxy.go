@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -192,8 +193,10 @@ func (p *Proxy) Stop() error {
 
 	log.Printf("INFO: Stopping proxy server")
 
-	// Shutdown gracefully with no timeout (caller can use context for timeout)
-	if err := p.server.Shutdown(nil); err != nil {
+	// Shutdown gracefully
+	// Use context.Background() for a clean shutdown without timeout.
+	// Future: Could accept context parameter to allow caller to specify timeout.
+	if err := p.server.Shutdown(context.Background()); err != nil {
 		return fmt.Errorf("failed to shutdown proxy server: %w", err)
 	}
 

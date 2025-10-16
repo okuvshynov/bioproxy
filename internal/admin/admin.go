@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -168,7 +169,9 @@ func (s *Server) Stop() error {
 	log.Printf("INFO: Stopping admin server")
 
 	// Shutdown gracefully
-	if err := s.server.Shutdown(nil); err != nil {
+	// Use context.Background() for a clean shutdown without timeout.
+	// Future: Could accept context parameter to allow caller to specify timeout.
+	if err := s.server.Shutdown(context.Background()); err != nil {
 		return fmt.Errorf("failed to shutdown admin server: %w", err)
 	}
 
