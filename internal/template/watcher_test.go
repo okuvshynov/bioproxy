@@ -3,6 +3,7 @@ package template
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -155,7 +156,7 @@ func TestProcessTemplateString_MissingFile(t *testing.T) {
 	}
 
 	// Should contain error marker
-	if !containsString(result, "[Error reading") {
+	if !strings.Contains(result, "[Error reading") {
 		t.Errorf("Expected error marker in result, got: %q", result)
 	}
 }
@@ -266,20 +267,3 @@ func TestWatcher_ProcessTemplate_NotFound(t *testing.T) {
 	}
 }
 
-// Helper function to check if a string contains a substring
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) &&
-		(s == substr || len(s) > len(substr) &&
-		(s[:len(substr)] == substr ||
-		s[len(s)-len(substr):] == substr ||
-		containsSubstring(s, substr)))
-}
-
-func containsSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
