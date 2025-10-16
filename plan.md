@@ -206,3 +206,17 @@ func (m *LlamaServer) RequestCount() int
     - `internal/template/template.go`
     - `internal/config/config.go`
 
+### Streaming Safety Guard (Optional)
+- [ ] **Consider adding runtime guard for response body reads**
+  - **Issue:** Reading `resp.Body` in `ModifyResponse` breaks SSE streaming
+  - **Current protection:** Extensive comments in code + `TestManualStreamingChat`
+  - **Potential enhancement:** Add wrapper that panics if body is read
+  - **Options:**
+    1. Development-only guard (enabled via build tag or const)
+    2. Always-on guard (slight performance overhead)
+    3. Test-only detection (no production overhead)
+  - **Location:** `internal/proxy/proxy.go` ModifyResponse callback
+  - **Trade-off:** Safety vs performance (guard adds wrapper overhead)
+  - **Current approach:** Documentation-first, rely on tests
+  - **See commit:** Search for "CRITICAL STREAMING REQUIREMENT" comments
+

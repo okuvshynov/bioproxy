@@ -82,6 +82,28 @@ func New(cfg *config.Config, metrics *admin.Metrics) (*Proxy, error) {
 
 	// ModifyResponse is called after receiving a response from the backend
 	// but before sending it to the client. We use it for logging and metrics.
+	//
+	// CRITICAL STREAMING REQUIREMENT:
+	// Do NOT read resp.Body in this function! Reading the body would buffer the
+	// entire response in memory, breaking Server-Sent Events (SSE) streaming.
+	// llama.cpp uses SSE to send tokens in real-time as they're generated.
+	//
+	// Safe to access:
+	//   - resp.StatusCode    (status code from backend)
+	//   - resp.Header        (response headers)
+	//   - resp.Request       (original request)
+	//
+	// NEVER access:
+	//   - resp.Body.Read()          (breaks streaming)
+	//   - io.ReadAll(resp.Body)     (breaks streaming)
+	//   - Any operation that reads the body
+	//
+	// The httputil.ReverseProxy automatically handles streaming by:
+	// 1. Forwarding chunks as they arrive from backend
+	// 2. Calling Flush() after each chunk if ResponseWriter supports it
+	// 3. Preserving Content-Type: text/event-stream headers
+	//
+	// Validation: TestManualStreamingChat verifies SSE streaming works correctly.
 	p.reverseProxy.ModifyResponse = func(resp *http.Response) error {
 		log.Printf("INFO: Backend responded with status %d for %s %s",
 			resp.StatusCode,
