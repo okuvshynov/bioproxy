@@ -1,0 +1,54 @@
+name: Tests
+
+# Run on push to main and on all pull requests
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}
+    # Run tests on both Linux and Windows
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        go-version: ['1.21']
+
+    steps:
+    # Checkout the code
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # Set up Go environment
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ matrix.go-version }}
+
+    # Download dependencies
+    # go.mod currently has no dependencies, but this ensures
+    # any future dependencies are properly fetched
+    - name: Download dependencies
+      run: go mod download
+
+    # Run tests with verbose output and race detection
+    # -v: verbose output showing each test
+    # -race: enable race detector (helps catch concurrency bugs)
+    # -coverprofile: generate coverage report
+    # ./...: test all packages recursively
+    - name: Run tests
+      run: go test -v -race -coverprofile=coverage.txt ./...
+
+    # Upload coverage report for analysis
+    # Only run on Linux to avoid duplicate uploads
+    - name: Upload coverage
+      if: matrix.os == 'ubuntu-latest'
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.txt
+        fail_ci_if_error: false
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
