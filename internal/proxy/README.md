@@ -14,7 +14,7 @@ The proxy uses Go's standard library `httputil.ReverseProxy` for efficient reque
 
 - **proxy.go** - Main proxy implementation with request forwarding and logging
 - **proxy_test.go** - Unit tests using mock HTTP servers (9 tests)
-- **manual_test.go** - Integration tests requiring a real llama.cpp server (5 tests)
+- **manual_test.go** - Integration tests requiring a real llama.cpp server (6 tests)
 
 ## Running Tests
 
@@ -71,6 +71,9 @@ go clean -testcache && go test -tags=manual -v ./internal/proxy/... -run TestMan
 # Chat completion (most visible in llama.cpp logs)
 go clean -testcache && go test -tags=manual -v ./internal/proxy/... -run TestManualChatCompletion
 
+# Streaming SSE (Server-Sent Events) test
+go clean -testcache && go test -tags=manual -v ./internal/proxy/... -run TestManualStreamingChat
+
 # Performance measurement
 go clean -testcache && go test -tags=manual -v ./internal/proxy/... -run TestManualProxyPerformance
 ```
@@ -90,6 +93,7 @@ Watch your llama.cpp terminal while running tests - you should see incoming requ
 - KV cache save operation (creates `test_manual_slot.bin`)
 - KV cache restore operation (loads saved cache)
 - Chat completion requests (actual inference)
+- Streaming SSE support (real-time token generation)
 - Proxy latency overhead (should be <2ms on localhost)
 
 ## Usage Example
@@ -168,6 +172,14 @@ The proxy adds minimal overhead:
 - Uses efficient connection pooling
 - No request/response buffering for streaming
 
+### Streaming Support
+
+The proxy correctly handles Server-Sent Events (SSE) for streaming responses:
+- `httputil.ReverseProxy` automatically flushes chunks as they arrive
+- No buffering of streaming responses
+- Headers (e.g., `Content-Type: text/event-stream`) are preserved
+- Critical for real-time token generation from llama.cpp
+
 ## Test Coverage
 
 **Unit Tests:** 9 tests, all passing ✅
@@ -177,8 +189,9 @@ The proxy adds minimal overhead:
 - Header handling
 - Lifecycle management
 
-**Manual Tests:** 5 tests, requires llama.cpp
+**Manual Tests:** 6 tests, requires llama.cpp
 - Health checks
 - KV cache operations
-- Chat completions
+- Chat completions (non-streaming and streaming)
+- SSE streaming verification
 - Performance benchmarks

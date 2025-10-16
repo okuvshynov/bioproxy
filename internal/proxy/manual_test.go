@@ -308,6 +308,130 @@ func TestManualChatCompletion(t *testing.T) {
 	}
 }
 
+// TestManualStreamingChat tests that SSE streaming works correctly through the proxy.
+// This is critical for real-time token generation from llama.cpp.
+func TestManualStreamingChat(t *testing.T) {
+	checkLlamaCppAvailable(t)
+
+	cfg := &config.Config{
+		ProxyHost:  "localhost",
+		ProxyPort:  manualProxyPort,
+		BackendURL: llamaCppURL,
+	}
+
+	proxy, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("Failed to create proxy: %v", err)
+	}
+
+	err = proxy.Start()
+	if err != nil {
+		t.Fatalf("Failed to start proxy: %v", err)
+	}
+	defer proxy.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Chat request with streaming enabled
+	chatRequest := map[string]interface{}{
+		"messages": []map[string]string{
+			{
+				"role":    "user",
+				"content": "Count from 1 to 5, one number per line.",
+			},
+		},
+		"max_tokens":  50,
+		"temperature": 0.1,
+		"stream":      true, // Enable SSE streaming
+	}
+
+	requestBody, _ := json.Marshal(chatRequest)
+
+	proxyURL := fmt.Sprintf("http://localhost:%d", manualProxyPort)
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	req, err := http.NewRequest("POST",
+		proxyURL+"/v1/chat/completions",
+		bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer no-key")
+
+	t.Log("Sending streaming chat completion request through proxy...")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to start streaming: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("Expected status 200, got %d: %s", resp.StatusCode, string(body))
+		return
+	}
+
+	// Verify it's actually SSE
+	contentType := resp.Header.Get("Content-Type")
+	if contentType != "text/event-stream" {
+		t.Errorf("Expected Content-Type: text/event-stream, got %s", contentType)
+	}
+
+	t.Log("Receiving SSE stream...")
+
+	// Read SSE events as they arrive
+	// This tests that the proxy correctly flushes each chunk
+	eventCount := 0
+	buffer := make([]byte, 4096)
+	var fullResponse bytes.Buffer
+
+	startTime := time.Now()
+	for {
+		n, err := resp.Body.Read(buffer)
+		if n > 0 {
+			chunk := buffer[:n]
+			fullResponse.Write(chunk)
+
+			// Count events (lines starting with "data:")
+			lines := bytes.Split(chunk, []byte("\n"))
+			for _, line := range lines {
+				if bytes.HasPrefix(line, []byte("data:")) {
+					eventCount++
+					t.Logf("  [%v] Received SSE event #%d", time.Since(startTime), eventCount)
+
+					// Log first few events for debugging
+					if eventCount <= 3 {
+						t.Logf("    Content: %s", string(line))
+					}
+				}
+			}
+		}
+
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Errorf("Error reading stream: %v", err)
+			break
+		}
+	}
+
+	elapsed := time.Since(startTime)
+	t.Logf("Stream completed in %v", elapsed)
+	t.Logf("Total SSE events received: %d", eventCount)
+
+	if eventCount == 0 {
+		t.Error("No SSE events received! Streaming may not be working correctly.")
+		t.Logf("Full response:\n%s", fullResponse.String())
+	} else {
+		t.Log("✅ SSE streaming works correctly through the proxy!")
+	}
+}
+
 // TestManualProxyPerformance tests basic performance characteristics
 // This helps verify the proxy doesn't add significant overhead
 func TestManualProxyPerformance(t *testing.T) {

@@ -190,3 +190,19 @@ func (m *LlamaServer) RequestCount() int
 - **Manual tests**: Real llama.cpp server at localhost:8081
 - Mock server avoids CI dependency on large models
 
+## Housekeeping & Improvements
+
+### Logging Migration
+- [ ] **Migrate from `log` to `log/slog`**
+  - Replace manual "INFO:", "ERROR:" prefixes with proper log levels
+  - Use structured logging (key-value pairs) for better observability
+  - Add level filtering capability (DEBUG, INFO, WARN, ERROR)
+  - Support both text (development) and JSON (production) output formats
+  - Remains stdlib-only, no external dependencies
+  - Files to update:
+    - `cmd/bioproxy/main.go`
+    - `internal/proxy/proxy.go`
+    - `internal/admin/admin.go`
+    - `internal/template/template.go`
+    - `internal/config/config.go`
+
