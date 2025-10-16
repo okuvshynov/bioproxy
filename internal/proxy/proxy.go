@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sync"
 
+	"github.com/oleksandr/bioproxy/internal/admin"
 	"github.com/oleksandr/bioproxy/internal/config"
 )
 
@@ -27,6 +28,9 @@ type Proxy struct {
 	// server is the HTTP server instance
 	server *http.Server
 
+	// metrics holds request statistics (can be nil if metrics not enabled)
+	metrics *admin.Metrics
+
 	// mu protects concurrent access to the proxy state
 	mu sync.Mutex
 
@@ -37,8 +41,10 @@ type Proxy struct {
 // New creates a new Proxy instance with the given configuration.
 // It parses the backend URL and sets up the reverse proxy.
 //
+// The metrics parameter is optional - pass nil to disable metrics collection.
+//
 // Returns an error if the backend URL is invalid.
-func New(cfg *config.Config) (*Proxy, error) {
+func New(cfg *config.Config, metrics *admin.Metrics) (*Proxy, error) {
 	// Parse the backend URL to ensure it's valid
 	backend, err := url.Parse(cfg.BackendURL)
 	if err != nil {
@@ -49,6 +55,7 @@ func New(cfg *config.Config) (*Proxy, error) {
 	p := &Proxy{
 		config:  cfg,
 		backend: backend,
+		metrics: metrics,
 		running: false,
 	}
 
@@ -74,13 +81,19 @@ func New(cfg *config.Config) (*Proxy, error) {
 	}
 
 	// ModifyResponse is called after receiving a response from the backend
-	// but before sending it to the client. We use it for logging.
+	// but before sending it to the client. We use it for logging and metrics.
 	p.reverseProxy.ModifyResponse = func(resp *http.Response) error {
 		log.Printf("INFO: Backend responded with status %d for %s %s",
 			resp.StatusCode,
 			resp.Request.Method,
 			resp.Request.URL.Path,
 		)
+
+		// Record metrics if enabled
+		if p.metrics != nil {
+			p.metrics.RecordRequest(resp.Request.URL.Path, resp.StatusCode)
+		}
+
 		return nil
 	}
 
@@ -91,6 +104,12 @@ func New(cfg *config.Config) (*Proxy, error) {
 			r.URL.Path,
 			err,
 		)
+
+		// Record error metric if enabled
+		if p.metrics != nil {
+			p.metrics.RecordRequest(r.URL.Path, http.StatusBadGateway)
+		}
+
 		// Return a 502 Bad Gateway when the backend is unavailable
 		http.Error(w, "Backend server unavailable", http.StatusBadGateway)
 	}

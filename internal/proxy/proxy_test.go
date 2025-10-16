@@ -25,7 +25,7 @@ func createTestConfig(backendURL string) *config.Config {
 func TestNew(t *testing.T) {
 	cfg := createTestConfig("http://localhost:8081")
 
-	proxy, err := New(cfg)
+	proxy, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestNewInvalidBackendURL(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := createTestConfig(tc.backendURL)
-			proxy, err := New(cfg)
+			proxy, err := New(cfg, nil)
 
 			if err == nil {
 				t.Errorf("Expected error for invalid backend URL %s, got nil", tc.backendURL)
@@ -105,7 +105,7 @@ func TestProxyForwarding(t *testing.T) {
 
 	// Create proxy pointing to the mock backend
 	cfg := createTestConfig(backend.URL)
-	proxy, err := New(cfg)
+	proxy, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestProxyForwardingDifferentMethods(t *testing.T) {
 			defer backend.Close()
 
 			cfg := createTestConfig(backend.URL)
-			proxy, err := New(cfg)
+			proxy, err := New(cfg, nil)
 			if err != nil {
 				t.Fatalf("Failed to create proxy: %v", err)
 			}
@@ -195,7 +195,7 @@ func TestProxyHeaderForwarding(t *testing.T) {
 	defer backend.Close()
 
 	cfg := createTestConfig(backend.URL)
-	proxy, err := New(cfg)
+	proxy, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestProxyHeaderForwarding(t *testing.T) {
 func TestProxyBackendError(t *testing.T) {
 	// Create proxy pointing to a non-existent backend
 	cfg := createTestConfig("http://localhost:99999") // Invalid port
-	proxy, err := New(cfg)
+	proxy, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestStartStop(t *testing.T) {
 	// Use a specific port for this test
 	cfg.ProxyPort = 0 // Let OS assign port
 
-	proxy, err := New(cfg)
+	proxy, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestProxyIntegration(t *testing.T) {
 	cfg.ProxyHost = "localhost"
 	cfg.ProxyPort = 0 // Let OS assign port
 
-	proxy, err := New(cfg)
+	proxy, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestProxyDifferentPaths(t *testing.T) {
 			defer backend.Close()
 
 			cfg := createTestConfig(backend.URL)
-			proxy, err := New(cfg)
+			proxy, err := New(cfg, nil)
 			if err != nil {
 				t.Fatalf("Failed to create proxy: %v", err)
 			}

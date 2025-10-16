@@ -64,7 +64,7 @@ func TestManualHealthCheck(t *testing.T) {
 	}
 
 	// Create and start proxy
-	proxy, err := New(cfg)
+	proxy, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestManualSlotSave(t *testing.T) {
 		BackendURL: llamaCppURL,
 	}
 
-	proxy, err := New(cfg)
+	proxy, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestManualSlotRestore(t *testing.T) {
 		BackendURL: llamaCppURL,
 	}
 
-	proxy, err := New(cfg)
+	proxy, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestManualChatCompletion(t *testing.T) {
 		BackendURL: llamaCppURL,
 	}
 
-	proxy, err := New(cfg)
+	proxy, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestManualProxyPerformance(t *testing.T) {
 		BackendURL: llamaCppURL,
 	}
 
-	proxy, err := New(cfg)
+	proxy, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}

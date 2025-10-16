@@ -43,15 +43,15 @@ Press Ctrl+C to stop...
 
 ### Testing the Proxy
 
-**From terminal (curl):**
+**Proxy endpoints (port 8088):**
 ```bash
-# Health check
+# Health check (forwarded to llama.cpp)
 curl http://localhost:8088/health
 
-# List models
+# List models (forwarded to llama.cpp)
 curl http://localhost:8088/v1/models
 
-# Chat completion
+# Chat completion (forwarded to llama.cpp)
 curl http://localhost:8088/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer no-key" \
@@ -61,21 +61,36 @@ curl http://localhost:8088/v1/chat/completions \
   }'
 ```
 
+**Admin endpoints (port 8089):**
+```bash
+# Health and uptime
+curl http://localhost:8089/health
+
+# Prometheus-style metrics
+curl http://localhost:8089/metrics
+```
+
 **From browser:**
-- Open http://localhost:8088/health in your browser
-- You should see: `{"status":"ok"}`
+- Proxy health: http://localhost:8088/health
+- Admin health: http://localhost:8089/health
+- Metrics: http://localhost:8089/metrics
 
 **From any OpenAI-compatible client:**
 - Point your client to `http://localhost:8088`
-- All requests will be forwarded to llama.cpp
+- All requests will be forwarded to llama.cpp and metrics will be collected
 
 ### Architecture
 
 ```
-Client/Browser → bioproxy (8088) → llama.cpp (8081)
+Client/Browser → bioproxy proxy (8088) → llama.cpp (8081)
+                    ↓
+                 metrics
+                    ↓
+              Admin server (8089) → /health, /metrics
 ```
 
-The proxy currently acts as a passthrough, forwarding all requests to llama.cpp while logging traffic.
+- **Proxy (8088)**: Forwards requests to llama.cpp, collects metrics
+- **Admin (8089)**: Provides health status and Prometheus-formatted metrics
 
 ## Development
 
@@ -96,6 +111,7 @@ go clean -testcache && go test -tags=manual -v ./internal/proxy/...
 - `cmd/bioproxy/` - Main executable
 - `internal/config/` - Configuration management
 - `internal/proxy/` - Reverse proxy implementation
+- `internal/admin/` - Admin server with health and metrics endpoints
 - `internal/template/` - Template watching and processing
 
 ## Current Status
@@ -106,8 +122,14 @@ go clean -testcache && go test -tags=manual -v ./internal/proxy/...
 - Handles backend errors gracefully
 - Minimal overhead (~1-2ms)
 
+**Phase 2 Complete:** ✅ Admin endpoints and metrics
+- Admin server on separate port (8089)
+- `/health` endpoint with uptime information
+- `/metrics` endpoint with Prometheus-style metrics
+- Metrics include: request counts by endpoint and status code
+- Thread-safe metrics collection
+
 **Coming Next:**
-- Phase 2: Admin endpoints for status/metrics
 - Phase 3: Template injection for chat completions
 - Phase 4: KV cache save/restore integration
 - Phase 5: Request queue with warmup prioritization

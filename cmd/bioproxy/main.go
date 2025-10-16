@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/oleksandr/bioproxy/internal/admin"
 	"github.com/oleksandr/bioproxy/internal/config"
 	"github.com/oleksandr/bioproxy/internal/proxy"
 )
@@ -45,30 +46,47 @@ func main() {
 	fmt.Println("Configuration:")
 	fmt.Printf("  Proxy listening on: http://%s:%d\n", cfg.ProxyHost, cfg.ProxyPort)
 	fmt.Printf("  Backend llama.cpp:  %s\n", cfg.BackendURL)
-	fmt.Printf("  Admin (future):     http://%s:%d\n", cfg.AdminHost, cfg.AdminPort)
+	fmt.Printf("  Admin server:       http://%s:%d\n", cfg.AdminHost, cfg.AdminPort)
 	fmt.Println()
 
-	// Create the proxy
+	// Create shared metrics instance
+	// Both proxy and admin server will use this
+	metrics := admin.NewMetrics()
+
+	// Create the proxy with metrics collection
 	log.Println("INFO: Creating proxy server...")
-	p, err := proxy.New(cfg)
+	p, err := proxy.New(cfg, metrics)
 	if err != nil {
 		log.Fatalf("FATAL: Failed to create proxy: %v", err)
 	}
 
-	// Start the proxy in a goroutine
-	// This is non-blocking, so we can handle signals below
+	// Create the admin server
+	log.Println("INFO: Creating admin server...")
+	adminServer := admin.New(cfg, metrics)
+
+	// Start the proxy
 	log.Println("INFO: Starting proxy server...")
 	if err := p.Start(); err != nil {
 		log.Fatalf("FATAL: Failed to start proxy: %v", err)
 	}
 
+	// Start the admin server
+	log.Println("INFO: Starting admin server...")
+	if err := adminServer.Start(); err != nil {
+		log.Fatalf("FATAL: Failed to start admin server: %v", err)
+	}
+
 	// Print ready message
 	fmt.Println()
-	fmt.Println("✅ Proxy server is running!")
+	fmt.Println("✅ Servers are running!")
 	fmt.Println()
-	fmt.Println("Try these commands:")
+	fmt.Println("Proxy endpoints:")
 	fmt.Printf("  curl http://localhost:%d/health\n", cfg.ProxyPort)
 	fmt.Printf("  curl http://localhost:%d/v1/models\n", cfg.ProxyPort)
+	fmt.Println()
+	fmt.Println("Admin endpoints:")
+	fmt.Printf("  curl http://localhost:%d/health\n", cfg.AdminPort)
+	fmt.Printf("  curl http://localhost:%d/metrics\n", cfg.AdminPort)
 	fmt.Println()
 	fmt.Println("Press Ctrl+C to stop...")
 	fmt.Println()
@@ -83,7 +101,12 @@ func main() {
 
 	// Shutdown signal received
 	fmt.Println()
-	log.Println("INFO: Shutdown signal received, stopping proxy...")
+	log.Println("INFO: Shutdown signal received, stopping servers...")
+
+	// Stop the admin server gracefully
+	if err := adminServer.Stop(); err != nil {
+		log.Printf("ERROR: Error stopping admin server: %v", err)
+	}
 
 	// Stop the proxy gracefully
 	if err := p.Stop(); err != nil {
@@ -91,6 +114,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	log.Println("INFO: Proxy stopped cleanly")
+	log.Println("INFO: Servers stopped cleanly")
 	fmt.Println("👋 Goodbye!")
 }
