@@ -39,7 +39,9 @@ jobs:
     # -race: enable race detector (helps catch concurrency bugs)
     # -coverprofile: generate coverage report
     # ./...: test all packages recursively
+    # Using bash shell explicitly to ensure ./... works correctly on Windows
     - name: Run tests
+      shell: bash
       run: go test -v -race -coverprofile=coverage.txt ./...
 
     # Upload coverage report for analysis
