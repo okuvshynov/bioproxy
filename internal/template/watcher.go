@@ -3,6 +3,7 @@ package template
 import (
 	"crypto/sha256"
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"strings"
@@ -53,6 +54,7 @@ func (w *Watcher) AddTemplate(prefix, templatePath string) error {
 	// Process template with empty message to get initial hash
 	processed, err := processTemplateFile(templatePath, "")
 	if err != nil {
+		log.Printf("ERROR: Failed to add template %s from %s: %v", prefix, templatePath, err)
 		return fmt.Errorf("failed to process template %s: %w", prefix, err)
 	}
 
@@ -65,6 +67,7 @@ func (w *Watcher) AddTemplate(prefix, templatePath string) error {
 	}
 
 	w.templates[prefix] = state
+	log.Printf("Added template %s from %s (needs warmup)", prefix, templatePath)
 	return nil
 }
 
@@ -80,7 +83,8 @@ func (w *Watcher) CheckForChanges() []string {
 		// Process template with empty message
 		processed, err := processTemplateFile(state.TemplatePath, "")
 		if err != nil {
-			// If we can't process template, skip it
+			// If we can't process template, skip it but log the error
+			log.Printf("WARNING: Failed to check template %s: %v", prefix, err)
 			continue
 		}
 
@@ -92,6 +96,7 @@ func (w *Watcher) CheckForChanges() []string {
 			state.NeedsWarmup = true
 			state.ProcessedHash = newHash
 			changed = append(changed, prefix)
+			log.Printf("Template %s changed, needs warmup", prefix)
 		}
 	}
 
@@ -130,10 +135,17 @@ func (w *Watcher) ProcessTemplate(prefix, userMessage string) (string, error) {
 	w.mu.RUnlock()
 
 	if !exists {
+		log.Printf("ERROR: Template not found for prefix %s", prefix)
 		return "", fmt.Errorf("template for prefix %s not found", prefix)
 	}
 
-	return processTemplateFile(state.TemplatePath, userMessage)
+	result, err := processTemplateFile(state.TemplatePath, userMessage)
+	if err != nil {
+		log.Printf("ERROR: Failed to process template %s: %v", prefix, err)
+		return "", err
+	}
+
+	return result, nil
 }
 
 // processTemplateFile reads and processes a template file
@@ -173,9 +185,10 @@ func ProcessTemplateString(template string, userMessage string) (string, error) 
 		// Treat as file path
 		content, err := os.ReadFile(placeholder)
 		if err != nil {
-			// Return error marker in output
+			// Log the error and return error marker in output
 			// Note: This error marker itself won't be processed even if it
 			// contains <{...}> patterns, because we're already in the replacement
+			log.Printf("WARNING: Failed to read included file %s: %v", placeholder, err)
 			return fmt.Sprintf("[Error reading %s: %v]", placeholder, err)
 		}
 
