@@ -28,10 +28,165 @@ Product/feature requirements:
 6. assume we work on slot # 0 all the time
 7. maintain internal request queue and act as a gate for the llama.cpp server. Warmup queries should be issued only if there's no user-initiated query waiting. At the moment, llama.cpp server doesn't support request cancellation, but we might need to implement that in future.
 
-Let's start with:
-1. creating project structure
-2. implementing template watch functionality (and config reading)
-3. implementing metric export endpoint
-4. implementing basic proxy functionality
-5. implementing queues, warmup/user prioritization and plan ahead for warmup cancellation
+## Implementation Progress
+
+### ✅ Completed
+1. **Project structure** - Created go.mod, .gitignore, GitHub Actions CI
+2. **Configuration module** (`internal/config/`)
+   - Config struct with proxy settings (ProxyHost, ProxyPort, AdminHost, AdminPort, BackendURL)
+   - Template prefix mappings
+   - Default values with JSON override support
+   - Comprehensive test coverage (7 tests)
+3. **Template watching** (`internal/template/`)
+   - Watcher monitors templates and includes for changes
+   - Non-recursive placeholder processing: `<{message}>` and `<{filepath}>`
+   - Template-level change detection (hash of processed template)
+   - Thread-safe operations with RWMutex
+   - Comprehensive logging (INFO/WARNING/ERROR)
+   - 12 tests covering edge cases
+
+### 🚧 Next Steps (Proxy Implementation)
+
+#### Phase 1: Basic Reverse Proxy (NEXT)
+**Goal**: Simple passthrough proxy that forwards all requests to llama.cpp
+
+**Implementation**:
+```go
+// internal/proxy/proxy.go
+type Proxy struct {
+    config      *config.Config
+    backend     *url.URL
+    reverseProxy *httputil.ReverseProxy
+}
+
+func New(cfg *config.Config) (*Proxy, error)
+func (p *Proxy) Start() error
+func (p *Proxy) Stop() error
+```
+
+**What to build**:
+1. HTTP server on ProxyHost:ProxyPort (default localhost:8088)
+2. Forward ALL requests to BackendURL (http://localhost:8081)
+3. Use httputil.ReverseProxy from stdlib
+4. Basic logging of requests
+
+**Testing**:
+- Unit tests with httptest.NewServer
+- Manual test: curl http://localhost:8088/health -> llama.cpp
+
+**Files to create**:
+- `internal/proxy/proxy.go`
+- `internal/proxy/proxy_test.go`
+
+#### Phase 2: Admin Endpoints
+**Goal**: Add admin server with status and config endpoints
+
+**Implementation**:
+```go
+// internal/admin/admin.go
+type AdminServer struct {
+    config *config.Config
+    startTime time.Time
+}
+
+// GET /status - JSON with uptime, config summary
+// GET /config - JSON with full configuration
+```
+
+**What to build**:
+1. HTTP server on AdminHost:AdminPort (default localhost:8089)
+2. `/status` endpoint - uptime, version, backend status
+3. `/config` endpoint - return current configuration
+
+**Testing**:
+- Unit tests for handlers
+- Manual test: curl http://localhost:8089/status
+
+**Files to create**:
+- `internal/admin/admin.go`
+- `internal/admin/admin_test.go`
+
+#### Phase 3: Template Injection in Proxy
+**Goal**: Intercept `/v1/chat/completions` and inject templates
+
+**What to modify**:
+1. Parse request body in proxy
+2. Check first user message for prefix match
+3. If match found:
+   - Load template using template.Watcher
+   - Process template with user message
+   - Replace message content in request
+4. Forward modified request to llama.cpp
+
+**Testing approach**:
+- Need mock llama.cpp server for integration tests
+- Mock should record requests to validate injection worked
+
+#### Phase 4: Mock llama.cpp Server
+**Location**: `tests/mock/llama.go`
+
+**Features**:
+```go
+type LlamaServer struct {
+    server *httptest.Server
+    mu sync.Mutex
+    requests []RecordedRequest
+}
+
+type RecordedRequest struct {
+    Path string
+    Method string
+    Headers http.Header
+    Body []byte
+    BodyHash string
+}
+
+func (m *LlamaServer) LastRequest() RecordedRequest
+func (m *LlamaServer) RequestCount() int
+```
+
+**Endpoints to mock**:
+- POST `/v1/chat/completions` - return valid OpenAI response
+- POST `/slots/0?action=save` - record call
+- POST `/slots/0?action=restore` - record call
+- GET `/metrics` - return fake prometheus metrics
+- GET `/health` - return OK
+
+#### Phase 5: KV Cache Integration
+**Goal**: Load/save KV cache around requests
+
+**What to build**:
+1. Before processing request with template:
+   - POST to `/slots/0?action=restore` with filename `{prefix}.bin`
+   - Handle 404 if cache doesn't exist yet
+2. After request completes:
+   - POST to `/slots/0?action=save` with filename `{prefix}.bin`
+3. Always use slot 0
+
+#### Phase 6: Request Queue & Prioritization
+**Goal**: Queue requests, prioritize user requests over warmup
+
+**What to build**:
+1. Request queue with priority levels (user vs warmup)
+2. Only one request to llama.cpp at a time
+3. Warmup only when no user requests waiting
+4. Plan for future: cancellable warmup requests
+
+## Architecture Decisions
+
+### Port Configuration
+- **llama.cpp**: 8081 (backend)
+- **Proxy user port**: 8088 (OpenAI-compatible API)
+- **Proxy admin port**: 8089 (status, config, proxy metrics)
+
+### Dual Port Design
+- User port: forwards to llama.cpp, intercepts `/v1/chat/completions`
+- Admin port: proxy-specific endpoints
+- Allows separate access control (admin can be localhost-only)
+
+### Testing Strategy
+- **Unit tests**: httptest for handlers
+- **Integration tests**: Mock llama.cpp server (stateful, records requests)
+- **Manual tests**: Real llama.cpp server at localhost:8081
+- Mock server avoids CI dependency on large models
 

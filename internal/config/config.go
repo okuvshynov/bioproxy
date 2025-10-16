@@ -8,8 +8,33 @@ import (
 )
 
 // Config represents the bioproxy configuration
-// For now, we only support template prefix mappings
 type Config struct {
+	// ProxyHost is the host/IP address for the user-facing proxy server
+	// Use "localhost" or "127.0.0.1" for local-only access
+	// Use "0.0.0.0" to listen on all interfaces
+	// Default: "localhost"
+	ProxyHost string `json:"proxy_host"`
+
+	// ProxyPort is the port on which the user-facing proxy server listens
+	// This is the port clients connect to for OpenAI-compatible API
+	// Default: 8088
+	ProxyPort int `json:"proxy_port"`
+
+	// AdminHost is the host/IP address for the admin server
+	// Use "localhost" or "127.0.0.1" for local-only access
+	// Use "0.0.0.0" to listen on all interfaces
+	// Default: "localhost"
+	AdminHost string `json:"admin_host"`
+
+	// AdminPort is the port for proxy administration endpoints
+	// Provides /status, /config, and proxy-specific /metrics
+	// Default: 8089
+	AdminPort int `json:"admin_port"`
+
+	// BackendURL is the URL of the llama.cpp server to proxy to
+	// Default: http://localhost:8081
+	BackendURL string `json:"backend_url"`
+
 	// Prefixes maps message prefixes to template file paths
 	// When a user message starts with a key, the corresponding template is used
 	// Example: {"@code": "/path/to/code_template.txt"}
@@ -19,7 +44,12 @@ type Config struct {
 // DefaultConfig returns a Config with sensible default values
 func DefaultConfig() *Config {
 	return &Config{
-		Prefixes: make(map[string]string),
+		ProxyHost:  "localhost",
+		ProxyPort:  8088,
+		AdminHost:  "localhost",
+		AdminPort:  8089,
+		BackendURL: "http://localhost:8081",
+		Prefixes:   make(map[string]string),
 	}
 }
 
