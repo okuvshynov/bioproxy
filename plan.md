@@ -107,91 +107,79 @@ Product/feature requirements:
 - **MANUAL_TESTING.md** - Manual testing procedures
 - Extensive inline code comments
 
+#### 8. Template Injection (`internal/proxy/`)
+- **Chat Completion Interception** - Proxy now intercepts `/v1/chat/completions` for template injection
+  - Custom handler for `/v1/chat/completions` endpoint
+  - Detects template prefixes in last user message (e.g., "@code ", "@debug ")
+  - Processes templates with `watcher.ProcessTemplate(prefix, message)`
+  - **Critical fix**: Uses `map[string]interface{}` to preserve ALL request fields
+    - Previously used struct that only captured `messages` field
+    - This caused silent data loss: `stream: true`, `temperature`, `max_tokens`, etc. were dropped
+    - Bug caused streaming to break - llama.cpp received no `stream` parameter
+  - Properly handles streaming and non-streaming requests
+  - All other endpoints pass through via ReverseProxy unchanged
+  - **Tests**:
+    - `TestTemplateInjection` - Verifies template prefix detection and processing
+    - `TestTemplateInjectionNoPrefix` - Ensures non-prefixed messages pass through
+    - `TestTemplateInjectionMultiTurn` - Tests multi-turn conversation handling
+    - `TestManualTemplateInjection` - Manual test with real llama.cpp (non-streaming)
+    - `TestManualTemplateInjectionWithStreaming` - **Critical test** validates streaming with template injection
+  - **Lesson learned**: When modifying JSON requests, use `map[string]interface{}` to preserve all fields unless explicitly filtering
+
 ### 🚧 Next Steps
 
-#### NEXT: Template Injection in Proxy
-**Status**: Not yet implemented (proxy currently just forwards all requests)
+#### NEXT: Warmup & KV Cache Improvements
+**Priority**: High - Current implementation has issues with user experience
 
-**Goal**: Intercept `/v1/chat/completions` and inject templates when user message starts with configured prefix
+**Issues to address**:
 
-**What to modify in `internal/proxy/proxy.go`**:
-1. Add template.Watcher field to Proxy struct
-2. Create custom handler (instead of using ReverseProxy directly) for `/v1/chat/completions`
-3. In the handler:
-   - Parse incoming request body (JSON with messages array)
-   - Check first user message for prefix match (e.g., "@code", "@debug")
-   - If prefix found:
-     - Extract message without prefix: "@code how do I..." → "how do I..."
-     - Use watcher.ProcessTemplate(prefix, message) to get processed template
-     - Replace the message content with processed template result
-     - Marshal modified request back to JSON
-   - Forward request to llama.cpp (with or without modification)
-   - Stream response back to client
-4. Keep other endpoints forwarded directly via ReverseProxy
+1. **Immediate warmup on startup** (Currently: waits for first interval)
+   - **Problem**: Templates wait for `WarmupCheckInterval` (default 30s) before first warmup
+   - **Solution**: Trigger initial warmup check immediately after startup
+   - **Location**: `internal/warmup/manager.go` - modify `Start()` to check templates before entering loop
+   - **Benefit**: Faster time-to-ready for templates on proxy startup
 
-**Key Challenges**:
-- Must preserve streaming capability (don't break SSE)
-- Need to handle both streaming and non-streaming requests
-- Buffer/modify request, but stream response unchanged
-- Error handling when template processing fails
+2. **Warmup thrashes user sessions** (Currently: no coordination)
+   - **Problem**: Warmup manager sends requests directly to llama.cpp without coordination
+   - **Impact**:
+     - User requests load KV cache for their template
+     - Background warmup runs, loads different template, overwrites KV cache
+     - Next user request must reload KV cache (slow first token time)
+   - **Solution**: Implement KV cache restore/save around EVERY user request
+     - Before user request: restore KV cache for that template's prefix
+     - After user request: save KV cache back
+     - This protects user sessions from being thrashed by warmup
+   - **Location**: `internal/proxy/proxy.go` `handleChatCompletion` - add KV cache ops
+   - **Alternative**: Implement request queue (see below) to prevent concurrent requests
+   - **Trade-off**: More KV cache ops = more overhead, but better user experience
 
-**Testing approach**:
-- Unit test with mock backend to verify template injection
-- Test that non-prefixed messages pass through unchanged
-- Test that other endpoints (/health, /v1/models) still work
-- Manual test with real llama.cpp for streaming
-
-**Example Flow**:
-```
-Client sends:
-{
-  "messages": [
-    {"role": "user", "content": "@code How do I reverse a string?"}
-  ]
-}
-
-Proxy intercepts, processes template, sends to llama.cpp:
-{
-  "messages": [
-    {"role": "user", "content": "You are a coding assistant...\n\nUser question: How do I reverse a string?"}
-  ]
-}
-
-llama.cpp response streams back to client unchanged
-```
-
-#### Future: Request Queue & Prioritization
-**Status**: Not yet designed in detail
-
-**Current Situation**:
-- Proxy forwards all user requests immediately to llama.cpp
-- Warmup manager runs independently, sends warmup requests directly to llama.cpp
-- No coordination between user and warmup requests
-- llama.cpp handles queueing internally (but we have no visibility/control)
-
-**Goal**: Queue and prioritize requests (user requests before warmup)
-
-**What to build**:
-1. **Request Queue** (`internal/queue/`)
-   - Priority queue with two levels: user (high) and warmup (low)
-   - Single-slot processing (only one request to llama.cpp at a time)
-   - Thread-safe operations
-2. **Proxy Integration**:
-   - Enqueue user requests instead of forwarding directly
-   - Wait for completion before returning response to client
-   - Handle streaming responses through queue
-3. **Warmup Integration**:
-   - Warmup manager enqueues warmup requests (low priority)
-   - Warmup only executes when no user requests waiting
-4. **Metrics**: Queue depth, wait time, etc.
-
-**Design Questions** (to be resolved):
-- How to handle streaming with queued requests?
-- Should we cancel in-progress warmup when user request arrives?
-- What's the timeout for queued requests?
-- How to handle llama.cpp returning errors?
-
-**Note**: This is a significant architectural change. Template injection should be done first, as it's simpler and doesn't require queue infrastructure.
+3. **Request Queue & Prioritization** (Longer term)
+   - **Status**: Not yet designed in detail
+   - **Current Situation**:
+     - Proxy forwards all user requests immediately to llama.cpp
+     - Warmup manager runs independently, sends warmup requests directly to llama.cpp
+     - No coordination between user and warmup requests
+     - llama.cpp handles queueing internally (but we have no visibility/control)
+   - **Goal**: Queue and prioritize requests (user requests before warmup)
+   - **What to build**:
+     1. **Request Queue** (`internal/queue/`)
+        - Priority queue with two levels: user (high) and warmup (low)
+        - Single-slot processing (only one request to llama.cpp at a time)
+        - Thread-safe operations
+     2. **Proxy Integration**:
+        - Enqueue user requests instead of forwarding directly
+        - Wait for completion before returning response to client
+        - Handle streaming responses through queue
+     3. **Warmup Integration**:
+        - Warmup manager enqueues warmup requests (low priority)
+        - Warmup only executes when no user requests waiting
+     4. **Metrics**: Queue depth, wait time, etc.
+   - **Design Questions** (to be resolved):
+     - How to handle streaming with queued requests?
+     - Should we cancel in-progress warmup when user request arrives?
+     - What's the timeout for queued requests?
+     - How to handle llama.cpp returning errors?
+   - **Note**: This is a significant architectural change. KV cache restore/save per request (item #2) is simpler and addresses the thrashing issue.
 
 ## Architecture Decisions
 
@@ -212,6 +200,40 @@ llama.cpp response streams back to client unchanged
 - Mock server avoids CI dependency on large models
 
 ## Future Improvements (Backlog)
+
+### Cross-Platform Release Binaries
+**Priority**: Medium - Improves distribution and ease of use
+
+**Goal**: Automate building of cross-platform binaries for GitHub releases
+
+**Platforms to support**:
+1. **Linux x86_64** (amd64) - Most common server platform
+2. **Linux ARM64** (aarch64) - Raspberry Pi, cloud ARM instances, Apple Silicon servers
+3. **macOS Apple Silicon** (darwin/arm64) - M1/M2/M3 Macs
+4. **macOS Intel** (darwin/amd64) - Older Macs (optional, but easy to include)
+5. **Windows x86_64** (amd64) - Windows servers/desktops
+
+**Implementation**:
+- Use GitHub Actions workflow (`.github/workflows/release.yml`)
+- Trigger on git tags (e.g., `v0.1.0`)
+- Use `GOOS` and `GOARCH` environment variables for cross-compilation
+- Example build commands:
+  ```bash
+  GOOS=linux GOARCH=amd64 go build -o bioproxy-linux-amd64
+  GOOS=linux GOARCH=arm64 go build -o bioproxy-linux-arm64
+  GOOS=darwin GOARCH=arm64 go build -o bioproxy-darwin-arm64
+  GOOS=darwin GOARCH=amd64 go build -o bioproxy-darwin-amd64
+  GOOS=windows GOARCH=amd64 go build -o bioproxy-windows-amd64.exe
+  ```
+- Upload binaries as GitHub Release assets
+- Include checksums (SHA256) for verification
+
+**Reference**: Go's built-in cross-compilation support (no CGo dependencies needed)
+
+**Benefits**:
+- Users can download pre-built binaries instead of building from source
+- Easier onboarding for non-Go developers
+- Professional distribution approach
 
 ### Logging Migration (Optional)
 Currently using stdlib `log` package with manual "INFO:", "ERROR:" prefixes. Could migrate to `log/slog` for:
