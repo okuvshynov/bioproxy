@@ -203,10 +203,19 @@ func TestWatcher_CheckForChanges(t *testing.T) {
 		t.Fatalf("AddTemplate failed: %v", err)
 	}
 
-	// First check - should have changes (initial state)
+	// First check - should detect newly added template that needs warmup
 	changed := w.CheckForChanges()
+	if len(changed) != 1 || changed[0] != "@test" {
+		t.Errorf("Expected [@test] on first check (needs warmup), got %v", changed)
+	}
+
+	// Mark as warmed up for subsequent tests
+	w.MarkWarmedUp("@test")
+
+	// Second check - should have no changes now
+	changed = w.CheckForChanges()
 	if len(changed) != 0 {
-		t.Errorf("Expected no changes on first check, got %v", changed)
+		t.Errorf("Expected no changes after warmup, got %v", changed)
 	}
 
 	// Modify the included file

@@ -80,6 +80,12 @@ func (w *Watcher) CheckForChanges() []string {
 	var changed []string
 
 	for prefix, state := range w.templates {
+		// Check if already marked as needing warmup (e.g., newly added)
+		if state.NeedsWarmup {
+			changed = append(changed, prefix)
+			continue
+		}
+
 		// Process template with empty message
 		processed, err := processTemplateFile(state.TemplatePath, "")
 		if err != nil {

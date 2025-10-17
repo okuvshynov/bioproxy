@@ -20,81 +20,19 @@ The proxy uses Go's standard library `httputil.ReverseProxy` for efficient reque
 
 ### Unit Tests (No llama.cpp Required)
 
-Run the standard test suite that uses mock servers:
-
 ```bash
-# From project root
 go test ./internal/proxy/...
-
-# With verbose output
-go test -v ./internal/proxy/...
 ```
 
-These tests cover:
-- Proxy creation and configuration
-- Request forwarding (GET, POST, PUT, DELETE, PATCH)
-- Header forwarding (bidirectional)
-- Error handling (backend unavailable)
-- Start/Stop lifecycle
-- Multiple URL paths
+These tests cover proxy creation, request forwarding, headers, error handling, and lifecycle.
 
 ### Manual Integration Tests (Requires llama.cpp)
 
-For testing with a real llama.cpp server:
-
-**Prerequisites:**
-1. Start llama.cpp server on localhost:8081:
-   ```bash
-   ./llama-server -m /path/to/model.gguf --port 8081
-   ```
-
-2. Verify server is running:
-   ```bash
-   curl http://localhost:8081/health
-   ```
-
-**Run all manual tests:**
 ```bash
-# Clear test cache to ensure tests actually hit the server
 go clean -testcache && go test -tags=manual -v ./internal/proxy/...
 ```
 
-**Run specific manual tests:**
-```bash
-# Health check (minimal test)
-go clean -testcache && go test -tags=manual -v ./internal/proxy/... -run TestManualHealthCheck
-
-# KV cache save/restore
-go clean -testcache && go test -tags=manual -v ./internal/proxy/... -run TestManualSlotSave
-go clean -testcache && go test -tags=manual -v ./internal/proxy/... -run TestManualSlotRestore
-
-# Chat completion (most visible in llama.cpp logs)
-go clean -testcache && go test -tags=manual -v ./internal/proxy/... -run TestManualChatCompletion
-
-# Streaming SSE (Server-Sent Events) test
-go clean -testcache && go test -tags=manual -v ./internal/proxy/... -run TestManualStreamingChat
-
-# Performance measurement
-go clean -testcache && go test -tags=manual -v ./internal/proxy/... -run TestManualProxyPerformance
-```
-
-**Important:** Always use `go clean -testcache` before manual tests to ensure they actually execute and hit the llama.cpp server. Without this, Go may use cached test results and won't make any requests.
-
-**Verifying tests are hitting your server:**
-
-Watch your llama.cpp terminal while running tests - you should see incoming requests. If you don't see any activity:
-1. Ensure you ran `go clean -testcache` before the test
-2. Check that llama.cpp is running on port 8081
-3. Run a direct curl test: `curl http://localhost:8081/health`
-4. Enable verbose logging on llama.cpp if needed
-
-**What the manual tests verify:**
-- Basic request forwarding to real llama.cpp
-- KV cache save operation (creates `test_manual_slot.bin`)
-- KV cache restore operation (loads saved cache)
-- Chat completion requests (actual inference)
-- Streaming SSE support (real-time token generation)
-- Proxy latency overhead (should be <2ms on localhost)
+See [MANUAL_TESTING.md](../../MANUAL_TESTING.md) in the project root for complete guide.
 
 ## Usage Example
 

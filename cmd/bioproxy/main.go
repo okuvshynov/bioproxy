@@ -11,6 +11,8 @@ import (
 	"github.com/oleksandr/bioproxy/internal/admin"
 	"github.com/oleksandr/bioproxy/internal/config"
 	"github.com/oleksandr/bioproxy/internal/proxy"
+	"github.com/oleksandr/bioproxy/internal/template"
+	"github.com/oleksandr/bioproxy/internal/warmup"
 )
 
 // main is the entry point for the bioproxy server.
@@ -18,11 +20,12 @@ import (
 func main() {
 	// Define command-line flags
 	// These allow users to override default configuration
-	proxyHost := flag.String("host", "localhost", "Host to bind proxy server to (use 0.0.0.0 for all interfaces)")
-	proxyPort := flag.Int("port", 8088, "Port for proxy server to listen on")
-	adminHost := flag.String("admin-host", "localhost", "Host to bind admin server to")
-	adminPort := flag.Int("admin-port", 8089, "Port for admin server to listen on")
-	backendURL := flag.String("backend", "http://localhost:8081", "URL of the llama.cpp backend server")
+	configPath := flag.String("config", config.DefaultConfigPath(), "Path to configuration file")
+	proxyHost := flag.String("host", "", "Host to bind proxy server to (use 0.0.0.0 for all interfaces)")
+	proxyPort := flag.Int("port", 0, "Port for proxy server to listen on")
+	adminHost := flag.String("admin-host", "", "Host to bind admin server to")
+	adminPort := flag.Int("admin-port", 0, "Port for admin server to listen on")
+	backendURL := flag.String("backend", "", "URL of the llama.cpp backend server")
 
 	// Parse command-line flags
 	flag.Parse()
@@ -31,15 +34,27 @@ func main() {
 	fmt.Println("🚀 Starting bioproxy - llama.cpp reverse proxy with KV cache warmup")
 	fmt.Println()
 
-	// Load configuration
-	// Command-line flags override default values
-	// In the future, we can also read from a config file
-	cfg := &config.Config{
-		ProxyHost:  *proxyHost,
-		ProxyPort:  *proxyPort,
-		AdminHost:  *adminHost,
-		AdminPort:  *adminPort,
-		BackendURL: *backendURL,
+	// Load configuration from file
+	cfg, err := config.LoadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("FATAL: Failed to load config: %v", err)
+	}
+
+	// Override with command-line flags if provided
+	if *proxyHost != "" {
+		cfg.ProxyHost = *proxyHost
+	}
+	if *proxyPort != 0 {
+		cfg.ProxyPort = *proxyPort
+	}
+	if *adminHost != "" {
+		cfg.AdminHost = *adminHost
+	}
+	if *adminPort != 0 {
+		cfg.AdminPort = *adminPort
+	}
+	if *backendURL != "" {
+		cfg.BackendURL = *backendURL
 	}
 
 	// Print configuration
@@ -47,7 +62,24 @@ func main() {
 	fmt.Printf("  Proxy listening on: http://%s:%d\n", cfg.ProxyHost, cfg.ProxyPort)
 	fmt.Printf("  Backend llama.cpp:  %s\n", cfg.BackendURL)
 	fmt.Printf("  Admin server:       http://%s:%d\n", cfg.AdminHost, cfg.AdminPort)
+	fmt.Printf("  Warmup interval:    %ds\n", cfg.WarmupCheckInterval)
+	fmt.Printf("  Templates:          %d configured\n", len(cfg.Prefixes))
 	fmt.Println()
+
+	// Create template watcher
+	log.Println("INFO: Creating template watcher...")
+	watcher := template.NewWatcher()
+
+	// Add templates from config
+	for prefix, templatePath := range cfg.Prefixes {
+		if err := watcher.AddTemplate(prefix, templatePath); err != nil {
+			log.Printf("WARNING: Failed to add template %s: %v", prefix, err)
+		}
+	}
+
+	// Create warmup manager
+	log.Println("INFO: Creating warmup manager...")
+	warmupMgr := warmup.New(cfg, watcher, cfg.BackendURL)
 
 	// Create shared metrics instance
 	// Both proxy and admin server will use this
@@ -76,6 +108,12 @@ func main() {
 		log.Fatalf("FATAL: Failed to start admin server: %v", err)
 	}
 
+	// Start the warmup manager
+	log.Println("INFO: Starting warmup manager...")
+	if err := warmupMgr.Start(); err != nil {
+		log.Fatalf("FATAL: Failed to start warmup manager: %v", err)
+	}
+
 	// Print ready message
 	fmt.Println()
 	fmt.Println("✅ Servers are running!")
@@ -102,6 +140,9 @@ func main() {
 	// Shutdown signal received
 	fmt.Println()
 	log.Println("INFO: Shutdown signal received, stopping servers...")
+
+	// Stop the warmup manager first
+	warmupMgr.Stop()
 
 	// Stop the admin server gracefully
 	if err := adminServer.Stop(); err != nil {

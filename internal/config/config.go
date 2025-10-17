@@ -35,6 +35,11 @@ type Config struct {
 	// Default: http://localhost:8081
 	BackendURL string `json:"backend_url"`
 
+	// WarmupCheckInterval is how often to check templates for changes (seconds)
+	// The warmup manager checks templates at this interval and warms up changed ones
+	// Default: 30
+	WarmupCheckInterval int `json:"warmup_check_interval"`
+
 	// Prefixes maps message prefixes to template file paths
 	// When a user message starts with a key, the corresponding template is used
 	// Example: {"@code": "/path/to/code_template.txt"}
@@ -44,12 +49,13 @@ type Config struct {
 // DefaultConfig returns a Config with sensible default values
 func DefaultConfig() *Config {
 	return &Config{
-		ProxyHost:  "localhost",
-		ProxyPort:  8088,
-		AdminHost:  "localhost",
-		AdminPort:  8089,
-		BackendURL: "http://localhost:8081",
-		Prefixes:   make(map[string]string),
+		ProxyHost:           "localhost",
+		ProxyPort:           8088,
+		AdminHost:           "localhost",
+		AdminPort:           8089,
+		BackendURL:          "http://localhost:8081",
+		WarmupCheckInterval: 30,
+		Prefixes:            make(map[string]string),
 	}
 }
 
