@@ -31,146 +31,167 @@ Product/feature requirements:
 ## Implementation Progress
 
 ### ✅ Completed
-1. **Project structure** - Created go.mod, .gitignore, GitHub Actions CI
-2. **Configuration module** (`internal/config/`)
-   - Config struct with proxy settings (ProxyHost, ProxyPort, AdminHost, AdminPort, BackendURL)
-   - Template prefix mappings
-   - Default values with JSON override support
-   - Comprehensive test coverage (7 tests)
-3. **Template watching** (`internal/template/`)
-   - Watcher monitors templates and includes for changes
-   - Non-recursive placeholder processing: `<{message}>` and `<{filepath}>`
-   - Template-level change detection (hash of processed template)
-   - Thread-safe operations with RWMutex
-   - Comprehensive logging (INFO/WARNING/ERROR)
-   - 12 tests covering edge cases
 
-### 🚧 Next Steps (Proxy Implementation)
+#### 1. Core Infrastructure
+- **Project structure** - Created go.mod, .gitignore, GitHub Actions CI
+- **Configuration module** (`internal/config/`)
+  - Config struct with all settings (ProxyHost, ProxyPort, AdminHost, AdminPort, BackendURL)
+  - Template prefix mappings (Prefixes map)
+  - WarmupCheckInterval configuration
+  - Default values with JSON override and CLI flag support
+  - Comprehensive test coverage (7 tests)
 
-#### Phase 1: Basic Reverse Proxy (NEXT)
-**Goal**: Simple passthrough proxy that forwards all requests to llama.cpp
+#### 2. Template System (`internal/template/`)
+- **Template Watcher** - Monitors templates and includes for changes
+  - Non-recursive placeholder processing: `<{message}>` and `<{filepath}>`
+  - Template-level change detection (hash of processed template)
+  - Thread-safe operations with RWMutex
+  - NeedsWarmup flag tracking
+  - Comprehensive logging (INFO/WARNING/ERROR)
+  - 12 tests covering edge cases
 
-**Implementation**:
-```go
-// internal/proxy/proxy.go
-type Proxy struct {
-    config      *config.Config
-    backend     *url.URL
-    reverseProxy *httputil.ReverseProxy
-}
+#### 3. Basic Reverse Proxy (`internal/proxy/`)
+- **Simple HTTP Proxy** - Forwards ALL requests to llama.cpp (NO template injection yet)
+  - Runs on ProxyHost:ProxyPort (default localhost:8088)
+  - Uses httputil.ReverseProxy from stdlib
+  - Request/response logging
+  - Streaming support (SSE for `stream: true` requests)
+  - Metrics collection for all requests
+  - 8 unit tests + manual streaming test
+  - **NOTE**: Currently just a passthrough proxy, does NOT intercept or modify requests
 
-func New(cfg *config.Config) (*Proxy, error)
-func (p *Proxy) Start() error
-func (p *Proxy) Stop() error
-```
+#### 4. Admin Server (`internal/admin/`)
+- **Monitoring & Metrics** - Separate admin HTTP server
+  - Runs on AdminHost:AdminPort (default localhost:8089)
+  - `GET /health` - Health check with uptime
+  - `GET /metrics` - Prometheus-format metrics endpoint
+  - **Proxy Metrics**:
+    - `bioproxy_requests_total{endpoint,status}` - Request counts
+    - `bioproxy_requests_count` - Total requests
+    - `bioproxy_uptime_seconds` - Server uptime
+  - **Warmup Metrics**:
+    - `bioproxy_warmup_checks_total` - Total warmup check cycles
+    - `bioproxy_warmup_executions_total{prefix}` - Executions per template
+    - `bioproxy_warmup_errors_total{prefix,type}` - Errors by template and type
+    - `bioproxy_warmup_duration_seconds_total{prefix}` - Total duration
+    - `bioproxy_warmup_duration_seconds_count{prefix}` - Operation count
+    - `bioproxy_kv_cache_saves_total{prefix}` - Successful saves
+    - `bioproxy_kv_cache_restores_total{prefix,status}` - Restore attempts
+  - Thread-safe metrics with RWMutex
+  - 3 tests
 
-**What to build**:
-1. HTTP server on ProxyHost:ProxyPort (default localhost:8088)
-2. Forward ALL requests to BackendURL (http://localhost:8081)
-3. Use httputil.ReverseProxy from stdlib
-4. Basic logging of requests
+#### 5. Warmup Manager (`internal/warmup/`)
+- **Background KV Cache Warmup** - Automatic template warmup (runs independently)
+  - Background goroutine with configurable check interval
+  - Monitors template changes via Watcher
+  - **Warmup Sequence**:
+    1. Attempt to restore KV cache from `{prefix}.bin`
+    2. Send minimal completion request with processed template
+    3. Save KV cache to `{prefix}.bin`
+  - Comprehensive error handling and retry logic
+  - Metrics recording for all operations
+  - 9 unit tests + 7 manual integration tests
+  - Design document: `WARMUP_DESIGN.md`
 
-**Testing**:
-- Unit tests with httptest.NewServer
-- Manual test: curl http://localhost:8088/health -> llama.cpp
+#### 6. Main Application (`cmd/bioproxy/`)
+- **Complete Integration** - All components working together
+  - Configuration loading from file with CLI overrides
+  - Template watcher initialization
+  - Shared metrics across proxy, admin, and warmup
+  - Graceful shutdown with signal handling
+  - Startup banner with configuration summary
 
-**Files to create**:
-- `internal/proxy/proxy.go`
-- `internal/proxy/proxy_test.go`
+#### 7. Documentation
+- **README.md** - Complete setup guide with template examples
+- **WARMUP_DESIGN.md** - Architecture design for warmup system
+- **MANUAL_TESTING.md** - Manual testing procedures
+- Extensive inline code comments
 
-#### Phase 2: Admin Endpoints
-**Goal**: Add admin server with status and config endpoints
+### 🚧 Next Steps
 
-**Implementation**:
-```go
-// internal/admin/admin.go
-type AdminServer struct {
-    config *config.Config
-    startTime time.Time
-}
+#### NEXT: Template Injection in Proxy
+**Status**: Not yet implemented (proxy currently just forwards all requests)
 
-// GET /status - JSON with uptime, config summary
-// GET /config - JSON with full configuration
-```
+**Goal**: Intercept `/v1/chat/completions` and inject templates when user message starts with configured prefix
 
-**What to build**:
-1. HTTP server on AdminHost:AdminPort (default localhost:8089)
-2. `/status` endpoint - uptime, version, backend status
-3. `/config` endpoint - return current configuration
+**What to modify in `internal/proxy/proxy.go`**:
+1. Add template.Watcher field to Proxy struct
+2. Create custom handler (instead of using ReverseProxy directly) for `/v1/chat/completions`
+3. In the handler:
+   - Parse incoming request body (JSON with messages array)
+   - Check first user message for prefix match (e.g., "@code", "@debug")
+   - If prefix found:
+     - Extract message without prefix: "@code how do I..." → "how do I..."
+     - Use watcher.ProcessTemplate(prefix, message) to get processed template
+     - Replace the message content with processed template result
+     - Marshal modified request back to JSON
+   - Forward request to llama.cpp (with or without modification)
+   - Stream response back to client
+4. Keep other endpoints forwarded directly via ReverseProxy
 
-**Testing**:
-- Unit tests for handlers
-- Manual test: curl http://localhost:8089/status
-
-**Files to create**:
-- `internal/admin/admin.go`
-- `internal/admin/admin_test.go`
-
-#### Phase 3: Template Injection in Proxy
-**Goal**: Intercept `/v1/chat/completions` and inject templates
-
-**What to modify**:
-1. Parse request body in proxy
-2. Check first user message for prefix match
-3. If match found:
-   - Load template using template.Watcher
-   - Process template with user message
-   - Replace message content in request
-4. Forward modified request to llama.cpp
+**Key Challenges**:
+- Must preserve streaming capability (don't break SSE)
+- Need to handle both streaming and non-streaming requests
+- Buffer/modify request, but stream response unchanged
+- Error handling when template processing fails
 
 **Testing approach**:
-- Need mock llama.cpp server for integration tests
-- Mock should record requests to validate injection worked
+- Unit test with mock backend to verify template injection
+- Test that non-prefixed messages pass through unchanged
+- Test that other endpoints (/health, /v1/models) still work
+- Manual test with real llama.cpp for streaming
 
-#### Phase 4: Mock llama.cpp Server
-**Location**: `tests/mock/llama.go`
-
-**Features**:
-```go
-type LlamaServer struct {
-    server *httptest.Server
-    mu sync.Mutex
-    requests []RecordedRequest
+**Example Flow**:
+```
+Client sends:
+{
+  "messages": [
+    {"role": "user", "content": "@code How do I reverse a string?"}
+  ]
 }
 
-type RecordedRequest struct {
-    Path string
-    Method string
-    Headers http.Header
-    Body []byte
-    BodyHash string
+Proxy intercepts, processes template, sends to llama.cpp:
+{
+  "messages": [
+    {"role": "user", "content": "You are a coding assistant...\n\nUser question: How do I reverse a string?"}
+  ]
 }
 
-func (m *LlamaServer) LastRequest() RecordedRequest
-func (m *LlamaServer) RequestCount() int
+llama.cpp response streams back to client unchanged
 ```
 
-**Endpoints to mock**:
-- POST `/v1/chat/completions` - return valid OpenAI response
-- POST `/slots/0?action=save` - record call
-- POST `/slots/0?action=restore` - record call
-- GET `/metrics` - return fake prometheus metrics
-- GET `/health` - return OK
+#### Future: Request Queue & Prioritization
+**Status**: Not yet designed in detail
 
-#### Phase 5: KV Cache Integration
-**Goal**: Load/save KV cache around requests
+**Current Situation**:
+- Proxy forwards all user requests immediately to llama.cpp
+- Warmup manager runs independently, sends warmup requests directly to llama.cpp
+- No coordination between user and warmup requests
+- llama.cpp handles queueing internally (but we have no visibility/control)
 
-**What to build**:
-1. Before processing request with template:
-   - POST to `/slots/0?action=restore` with filename `{prefix}.bin`
-   - Handle 404 if cache doesn't exist yet
-2. After request completes:
-   - POST to `/slots/0?action=save` with filename `{prefix}.bin`
-3. Always use slot 0
-
-#### Phase 6: Request Queue & Prioritization
-**Goal**: Queue requests, prioritize user requests over warmup
+**Goal**: Queue and prioritize requests (user requests before warmup)
 
 **What to build**:
-1. Request queue with priority levels (user vs warmup)
-2. Only one request to llama.cpp at a time
-3. Warmup only when no user requests waiting
-4. Plan for future: cancellable warmup requests
+1. **Request Queue** (`internal/queue/`)
+   - Priority queue with two levels: user (high) and warmup (low)
+   - Single-slot processing (only one request to llama.cpp at a time)
+   - Thread-safe operations
+2. **Proxy Integration**:
+   - Enqueue user requests instead of forwarding directly
+   - Wait for completion before returning response to client
+   - Handle streaming responses through queue
+3. **Warmup Integration**:
+   - Warmup manager enqueues warmup requests (low priority)
+   - Warmup only executes when no user requests waiting
+4. **Metrics**: Queue depth, wait time, etc.
+
+**Design Questions** (to be resolved):
+- How to handle streaming with queued requests?
+- Should we cancel in-progress warmup when user request arrives?
+- What's the timeout for queued requests?
+- How to handle llama.cpp returning errors?
+
+**Note**: This is a significant architectural change. Template injection should be done first, as it's simpler and doesn't require queue infrastructure.
 
 ## Architecture Decisions
 
@@ -190,33 +211,31 @@ func (m *LlamaServer) RequestCount() int
 - **Manual tests**: Real llama.cpp server at localhost:8081
 - Mock server avoids CI dependency on large models
 
-## Housekeeping & Improvements
+## Future Improvements (Backlog)
 
-### Logging Migration
-- [ ] **Migrate from `log` to `log/slog`**
-  - Replace manual "INFO:", "ERROR:" prefixes with proper log levels
-  - Use structured logging (key-value pairs) for better observability
-  - Add level filtering capability (DEBUG, INFO, WARN, ERROR)
-  - Support both text (development) and JSON (production) output formats
-  - Remains stdlib-only, no external dependencies
-  - Files to update:
-    - `cmd/bioproxy/main.go`
-    - `internal/proxy/proxy.go`
-    - `internal/admin/admin.go`
-    - `internal/template/template.go`
-    - `internal/config/config.go`
+### Logging Migration (Optional)
+Currently using stdlib `log` package with manual "INFO:", "ERROR:" prefixes. Could migrate to `log/slog` for:
+- Proper log levels (DEBUG, INFO, WARN, ERROR)
+- Structured logging (key-value pairs)
+- Level filtering
+- JSON output option for production
+- Still stdlib-only, no external dependencies
+
+**Files affected**: `cmd/bioproxy/main.go`, `internal/proxy/proxy.go`, `internal/admin/admin.go`, `internal/template/template.go`, `internal/warmup/manager.go`, `internal/config/config.go`
+
+**Trade-off**: Current approach is simple and works. Migration would be mostly cosmetic unless we need structured logging for log aggregation tools.
 
 ### Streaming Safety Guard (Optional)
-- [ ] **Consider adding runtime guard for response body reads**
-  - **Issue:** Reading `resp.Body` in `ModifyResponse` breaks SSE streaming
-  - **Current protection:** Extensive comments in code + `TestManualStreamingChat`
-  - **Potential enhancement:** Add wrapper that panics if body is read
-  - **Options:**
-    1. Development-only guard (enabled via build tag or const)
-    2. Always-on guard (slight performance overhead)
-    3. Test-only detection (no production overhead)
-  - **Location:** `internal/proxy/proxy.go` ModifyResponse callback
-  - **Trade-off:** Safety vs performance (guard adds wrapper overhead)
-  - **Current approach:** Documentation-first, rely on tests
-  - **See commit:** Search for "CRITICAL STREAMING REQUIREMENT" comments
+**Issue**: Reading `resp.Body` in `ModifyResponse` breaks SSE streaming
+**Current protection**: Extensive comments + `TestManualStreamingChat` test
+**Potential enhancement**: Runtime guard that panics if body is read
+
+**Options**:
+1. Development-only guard (enabled via build tag)
+2. Always-on guard (slight performance overhead)
+3. Test-only detection (no production impact)
+
+**Location**: `internal/proxy/proxy.go` ModifyResponse callback
+**Current approach**: Documentation-first, rely on tests (search for "CRITICAL STREAMING REQUIREMENT")
+**Decision**: Keep current approach unless we experience streaming bugs in practice
 
