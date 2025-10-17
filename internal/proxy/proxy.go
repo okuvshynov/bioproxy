@@ -243,26 +243,11 @@ func (p *Proxy) IsRunning() bool {
 	return p.running
 }
 
-// ChatMessage represents a single message in the OpenAI chat completion format.
-// This is used for both parsing incoming requests and modifying them for template injection.
-type ChatMessage struct {
-	Role    string `json:"role"`    // "system", "user", or "assistant"
-	Content string `json:"content"` // The message text
-}
-
-// ChatCompletionRequest represents the OpenAI chat completion API request format.
-// We only define the fields we need to inspect/modify, allowing other fields
-// to pass through unchanged via json.RawMessage.
-type ChatCompletionRequest struct {
-	Messages []ChatMessage `json:"messages"` // Array of conversation messages
-	// All other fields (model, temperature, stream, etc.) are preserved as-is
-}
-
 // handleChatCompletion is a custom handler for /v1/chat/completions that performs
 // template injection when a user message starts with a configured prefix.
 //
 // Flow:
-//  1. Read and parse the incoming request body as JSON
+//  1. Read and parse the incoming request body as JSON (using map[string]interface{})
 //  2. Find the last user message in the messages array
 //  3. Check if it starts with a configured template prefix (e.g., "@code ")
 //  4. If yes:
@@ -272,6 +257,10 @@ type ChatCompletionRequest struct {
 //  5. Marshal the (possibly modified) request back to JSON
 //  6. Forward to llama.cpp backend
 //  7. Stream response back to client (preserving SSE streaming)
+//
+// IMPORTANT: Uses map[string]interface{} to preserve ALL request fields including
+// stream, temperature, max_tokens, etc. This ensures streaming continues to work
+// after template injection.
 //
 // Template injection only affects request; responses stream through unchanged.
 func (p *Proxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
@@ -285,11 +274,28 @@ func (p *Proxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body.Close()
 
-	// Parse the chat completion request
-	var chatReq ChatCompletionRequest
-	if err := json.Unmarshal(bodyBytes, &chatReq); err != nil {
+	// Parse the chat completion request as a generic map to preserve ALL fields
+	// This is critical - we must preserve stream, temperature, max_tokens, etc.
+	var requestMap map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &requestMap); err != nil {
 		log.Printf("ERROR: Failed to parse chat completion request: %v", err)
 		http.Error(w, "Invalid request format", http.StatusBadRequest)
+		return
+	}
+
+	// Extract the messages array from the map
+	messagesInterface, hasMessages := requestMap["messages"]
+	if !hasMessages {
+		log.Printf("ERROR: Request has no messages field")
+		http.Error(w, "Request must include messages", http.StatusBadRequest)
+		return
+	}
+
+	// Convert to array of message maps
+	messagesArray, ok := messagesInterface.([]interface{})
+	if !ok {
+		log.Printf("ERROR: Messages field is not an array")
+		http.Error(w, "Messages must be an array", http.StatusBadRequest)
 		return
 	}
 
@@ -297,8 +303,12 @@ func (p *Proxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
 	// We check the last one because in multi-turn conversations,
 	// only the most recent user input should trigger template selection
 	lastUserIndex := -1
-	for i := len(chatReq.Messages) - 1; i >= 0; i-- {
-		if chatReq.Messages[i].Role == "user" {
+	for i := len(messagesArray) - 1; i >= 0; i-- {
+		messageMap, ok := messagesArray[i].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if role, ok := messageMap["role"].(string); ok && role == "user" {
 			lastUserIndex = i
 			break
 		}
@@ -306,7 +316,13 @@ func (p *Proxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	// If there's a user message, check for template prefix
 	if lastUserIndex >= 0 {
-		userMessage := chatReq.Messages[lastUserIndex].Content
+		messageMap := messagesArray[lastUserIndex].(map[string]interface{})
+		userMessage, ok := messageMap["content"].(string)
+		if !ok {
+			log.Printf("ERROR: User message content is not a string")
+			http.Error(w, "Message content must be a string", http.StatusBadRequest)
+			return
+		}
 
 		// Check each configured prefix to see if the message starts with it
 		for prefix := range p.config.Prefixes {
@@ -328,7 +344,7 @@ func (p *Proxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
 				}
 
 				// Replace the message content with the processed template
-				chatReq.Messages[lastUserIndex].Content = processedTemplate
+				messageMap["content"] = processedTemplate
 
 				log.Printf("INFO: Template %s processed successfully (%d bytes)", prefix, len(processedTemplate))
 				break // Only process the first matching prefix
@@ -337,7 +353,8 @@ func (p *Proxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Marshal the (possibly modified) request back to JSON
-	modifiedBody, err := json.Marshal(chatReq)
+	// This preserves ALL original fields including stream, temperature, max_tokens, etc.
+	modifiedBody, err := json.Marshal(requestMap)
 	if err != nil {
 		log.Printf("ERROR: Failed to marshal modified request: %v", err)
 		http.Error(w, "Failed to prepare request", http.StatusInternalServerError)

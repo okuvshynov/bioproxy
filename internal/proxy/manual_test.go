@@ -19,10 +19,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/oleksandr/bioproxy/internal/config"
+	"github.com/oleksandr/bioproxy/internal/template"
 )
 
 const (
@@ -63,8 +65,11 @@ func TestManualHealthCheck(t *testing.T) {
 		BackendURL: llamaCppURL,
 	}
 
+	// Create watcher (empty for this test - no templates)
+	watcher := template.NewWatcher()
+
 	// Create and start proxy
-	proxy, err := New(cfg, nil)
+	proxy, err := New(cfg, watcher, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -107,7 +112,8 @@ func TestManualSlotSave(t *testing.T) {
 		BackendURL: llamaCppURL,
 	}
 
-	proxy, err := New(cfg, nil)
+	watcher := template.NewWatcher()
+	proxy, err := New(cfg, watcher, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -167,7 +173,8 @@ func TestManualSlotRestore(t *testing.T) {
 		BackendURL: llamaCppURL,
 	}
 
-	proxy, err := New(cfg, nil)
+	watcher := template.NewWatcher()
+	proxy, err := New(cfg, watcher, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -227,7 +234,8 @@ func TestManualChatCompletion(t *testing.T) {
 		BackendURL: llamaCppURL,
 	}
 
-	proxy, err := New(cfg, nil)
+	watcher := template.NewWatcher()
+	proxy, err := New(cfg, watcher, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -319,7 +327,8 @@ func TestManualStreamingChat(t *testing.T) {
 		BackendURL: llamaCppURL,
 	}
 
-	proxy, err := New(cfg, nil)
+	watcher := template.NewWatcher()
+	proxy, err := New(cfg, watcher, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -443,7 +452,8 @@ func TestManualProxyPerformance(t *testing.T) {
 		BackendURL: llamaCppURL,
 	}
 
-	proxy, err := New(cfg, nil)
+	watcher := template.NewWatcher()
+	proxy, err := New(cfg, watcher, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -488,4 +498,278 @@ func TestManualProxyPerformance(t *testing.T) {
 	if avgLatency > 100*time.Millisecond {
 		t.Logf("Warning: Average latency seems high (%v). Check for performance issues.", avgLatency)
 	}
+}
+
+// TestManualTemplateInjection tests that template injection works correctly
+// This verifies that template prefixes are detected and templates are processed
+func TestManualTemplateInjection(t *testing.T) {
+	checkLlamaCppAvailable(t)
+
+	// Create a temporary template file
+	tmpDir := t.TempDir()
+	templateFile := tmpDir + "/test_template.txt"
+	templateContent := "You are a helpful test assistant. Always start your response with 'TEMPLATE_INJECTED:'.\n\nUser question: <{message}>"
+
+	if err := os.WriteFile(templateFile, []byte(templateContent), 0644); err != nil {
+		t.Fatalf("Failed to create template file: %v", err)
+	}
+
+	// Create watcher and add template
+	watcher := template.NewWatcher()
+	if err := watcher.AddTemplate("@test", templateFile); err != nil {
+		t.Fatalf("Failed to add template: %v", err)
+	}
+
+	// Create proxy with template support
+	cfg := &config.Config{
+		ProxyHost:  "localhost",
+		ProxyPort:  manualProxyPort,
+		BackendURL: llamaCppURL,
+		Prefixes:   map[string]string{"@test": templateFile},
+	}
+
+	proxy, err := New(cfg, watcher, nil)
+	if err != nil {
+		t.Fatalf("Failed to create proxy: %v", err)
+	}
+
+	err = proxy.Start()
+	if err != nil {
+		t.Fatalf("Failed to start proxy: %v", err)
+	}
+	defer proxy.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Send a request with the template prefix
+	chatRequest := map[string]interface{}{
+		"messages": []map[string]string{
+			{
+				"role":    "user",
+				"content": "@test What is 2+2?",
+			},
+		},
+		"max_tokens":  50,
+		"temperature": 0.7,
+		"stream":      false,
+	}
+
+	requestBody, _ := json.Marshal(chatRequest)
+
+	proxyURL := fmt.Sprintf("http://localhost:%d", manualProxyPort)
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	req, err := http.NewRequest("POST",
+		proxyURL+"/v1/chat/completions",
+		bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer no-key")
+
+	t.Log("Sending chat request with @test template prefix...")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to complete chat: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+		t.Logf("Response body: %s", string(body))
+		return
+	}
+
+	// Parse the response
+	var chatResponse map[string]interface{}
+	if err := json.Unmarshal(body, &chatResponse); err != nil {
+		t.Errorf("Failed to parse response: %v", err)
+		return
+	}
+
+	// Extract the generated text
+	var generatedContent string
+	if choices, ok := chatResponse["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]interface{}); ok {
+			if message, ok := choice["message"].(map[string]interface{}); ok {
+				if content, ok := message["content"].(string); ok {
+					generatedContent = content
+				}
+			}
+		}
+	}
+
+	t.Logf("Generated content: %s", generatedContent)
+
+	// Verify that the template was injected by checking if the response
+	// starts with our template marker
+	if !bytes.Contains([]byte(generatedContent), []byte("TEMPLATE_INJECTED:")) {
+		t.Logf("Warning: Template marker not found in response. Template may not have been injected.")
+		t.Logf("This could be expected if the model didn't follow instructions exactly.")
+	} else {
+		t.Log("✅ Template injection successful!")
+	}
+}
+
+// TestManualTemplateInjectionWithStreaming tests that template injection preserves streaming
+// This is the critical test that verifies the bug fix: stream parameter must be preserved
+func TestManualTemplateInjectionWithStreaming(t *testing.T) {
+	checkLlamaCppAvailable(t)
+
+	// Create a temporary template file
+	tmpDir := t.TempDir()
+	templateFile := tmpDir + "/stream_template.txt"
+	templateContent := "You are a counting assistant. Count slowly.\n\nUser request: <{message}>"
+
+	if err := os.WriteFile(templateFile, []byte(templateContent), 0644); err != nil {
+		t.Fatalf("Failed to create template file: %v", err)
+	}
+
+	// Create watcher and add template
+	watcher := template.NewWatcher()
+	if err := watcher.AddTemplate("@count", templateFile); err != nil {
+		t.Fatalf("Failed to add template: %v", err)
+	}
+
+	// Create proxy with template support
+	cfg := &config.Config{
+		ProxyHost:  "localhost",
+		ProxyPort:  manualProxyPort,
+		BackendURL: llamaCppURL,
+		Prefixes:   map[string]string{"@count": templateFile},
+	}
+
+	proxy, err := New(cfg, watcher, nil)
+	if err != nil {
+		t.Fatalf("Failed to create proxy: %v", err)
+	}
+
+	err = proxy.Start()
+	if err != nil {
+		t.Fatalf("Failed to start proxy: %v", err)
+	}
+	defer proxy.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Send a STREAMING request with template prefix
+	// This tests the critical fix: stream parameter must be preserved
+	chatRequest := map[string]interface{}{
+		"messages": []map[string]string{
+			{
+				"role":    "user",
+				"content": "@count Count from 1 to 3",
+			},
+		},
+		"max_tokens":  50,
+		"temperature": 0.1,
+		"stream":      true, // CRITICAL: This must be preserved during template injection
+	}
+
+	requestBody, _ := json.Marshal(chatRequest)
+
+	proxyURL := fmt.Sprintf("http://localhost:%d", manualProxyPort)
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	req, err := http.NewRequest("POST",
+		proxyURL+"/v1/chat/completions",
+		bytes.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("Failed to create request: %v", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer no-key")
+
+	t.Log("Sending STREAMING chat request with @count template prefix...")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to start streaming: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("Expected status 200, got %d: %s", resp.StatusCode, string(body))
+		return
+	}
+
+	// Verify SSE content type
+	contentType := resp.Header.Get("Content-Type")
+	if contentType != "text/event-stream" {
+		t.Errorf("Expected Content-Type: text/event-stream, got %s", contentType)
+		t.Error("Stream parameter may have been lost during template injection!")
+		return
+	}
+
+	t.Log("✅ Content-Type is text/event-stream - streaming is enabled")
+	t.Log("Receiving SSE stream with template injection...")
+
+	// Read SSE events as they arrive
+	eventCount := 0
+	buffer := make([]byte, 4096)
+	var fullResponse bytes.Buffer
+
+	startTime := time.Now()
+
+	for {
+		n, err := resp.Body.Read(buffer)
+		if n > 0 {
+			chunk := buffer[:n]
+			fullResponse.Write(chunk)
+
+			// Count events (lines starting with "data:")
+			lines := bytes.Split(chunk, []byte("\n"))
+			for _, line := range lines {
+				if bytes.HasPrefix(line, []byte("data:")) {
+					eventCount++
+					eventTime := time.Since(startTime)
+
+					// Log first few events for debugging
+					if eventCount <= 5 {
+						t.Logf("  [%v] SSE event #%d: %s", eventTime, eventCount, string(line[:min(len(line), 80)]))
+					}
+				}
+			}
+		}
+
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Errorf("Error reading stream: %v", err)
+			break
+		}
+	}
+
+	elapsed := time.Since(startTime)
+	t.Logf("Stream completed in %v", elapsed)
+	t.Logf("Total SSE events received: %d", eventCount)
+
+	// Verify streaming worked
+	if eventCount == 0 {
+		t.Error("❌ No SSE events received! Stream parameter was likely lost during template injection.")
+		t.Logf("Full response:\n%s", fullResponse.String())
+		return
+	}
+
+	// Verify events arrived progressively (not all at once)
+	if eventCount > 5 {
+		t.Log("✅ Received multiple SSE events - streaming is working correctly!")
+		t.Log("✅ Template injection preserves the stream parameter!")
+	} else {
+		t.Logf("Warning: Only received %d events. Stream may not be working optimally.", eventCount)
+	}
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
