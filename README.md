@@ -1,26 +1,76 @@
 # bioproxy
 
-A reverse proxy for llama.cpp that enables KV cache warmup for templated prompts.
+A reverse proxy for llama.cpp that enables automatic KV cache warmup for templated prompts.
 
 ## Quick Start
 
 ### Prerequisites
 
-1. **llama.cpp server running** on localhost:8081:
-   ```bash
-   cd /path/to/llama.cpp
-   ./llama-server -m /path/to/model.gguf --port 8081
-   ```
+**llama.cpp server** running with KV cache support:
+```bash
+cd /path/to/llama.cpp
+./llama-server -m models/model.gguf --port 8081 --slot-save-path ./kv_cache
+```
 
-2. **Build bioproxy**:
-   ```bash
-   go build -o bioproxy ./cmd/bioproxy
-   ```
+Note: `--slot-save-path` is required for KV cache warmup to work.
 
-### Running the Proxy
+### Installation
 
 ```bash
-./bioproxy
+git clone https://github.com/yourusername/bioproxy
+cd bioproxy
+go build -o bioproxy ./cmd/bioproxy
+```
+
+### Setup with Templates
+
+**1. Create template files:**
+
+```bash
+mkdir -p templates
+```
+
+Create `templates/code_assistant.txt`:
+```
+You are an expert coding assistant. You provide clear, working code examples.
+Always explain your reasoning and include error handling.
+
+User question: <{message}>
+
+Answer:
+```
+
+Create `templates/debug_helper.txt`:
+```
+You are a debugging expert. Analyze code issues systematically.
+
+Problem: <{message}>
+
+Analysis:
+```
+
+**2. Create configuration file:**
+
+Create `config.json`:
+```json
+{
+  "proxy_host": "localhost",
+  "proxy_port": 8088,
+  "admin_host": "localhost",
+  "admin_port": 8089,
+  "backend_url": "http://localhost:8081",
+  "warmup_check_interval": 30,
+  "prefixes": {
+    "@code": "templates/code_assistant.txt",
+    "@debug": "templates/debug_helper.txt"
+  }
+}
+```
+
+**3. Run bioproxy:**
+
+```bash
+./bioproxy -config config.json
 ```
 
 You should see:
@@ -30,67 +80,164 @@ You should see:
 Configuration:
   Proxy listening on: http://localhost:8088
   Backend llama.cpp:  http://localhost:8081
-  Admin (future):     http://localhost:8089
+  Admin server:       http://localhost:8089
+  Warmup interval:    30s
+  Templates:          2 configured
 
-✅ Proxy server is running!
+INFO: Creating template watcher...
+INFO: Added template @code from templates/code_assistant.txt (needs warmup)
+INFO: Added template @debug from templates/debug_helper.txt (needs warmup)
+INFO: Starting warmup manager...
+INFO: Warmup manager background loop started
 
-Try these commands:
-  curl http://localhost:8088/health
-  curl http://localhost:8088/v1/models
-
-Press Ctrl+C to stop...
+✅ Servers are running!
 ```
 
-### Testing the Proxy
+Within 30 seconds, you'll see the warmup process:
+```
+INFO: Checking templates for changes...
+INFO: Found 2 template(s) that need warmup: [@code @debug]
+INFO: Starting warmup for @code
+INFO: Sending warmup request for @code
+INFO: Warmup request completed for @code (1.2s)
+INFO: KV cache saved for code.bin
+INFO: Template @code warmup complete
+```
 
-**Proxy endpoints (port 8088):**
+### Using Templates (Future - Phase 2)
+
+Once template injection is implemented, you'll use templates like:
+
 ```bash
-# Health check (forwarded to llama.cpp)
-curl http://localhost:8088/health
-
-# List models (forwarded to llama.cpp)
-curl http://localhost:8088/v1/models
-
-# Chat completion (forwarded to llama.cpp)
 curl http://localhost:8088/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer no-key" \
+  -d '{
+    "messages": [{"role": "user", "content": "@code How do I reverse a string in Python?"}]
+  }'
+```
+
+The `@code` prefix triggers template substitution, and the pre-warmed KV cache makes the first response faster.
+
+### Basic Usage (Without Templates)
+
+Run without configuration for basic proxying:
+
+```bash
+./bioproxy
+```
+
+Test the proxy:
+```bash
+# Health check
+curl http://localhost:8088/health
+
+# Chat completion
+curl http://localhost:8088/v1/chat/completions \
+  -H "Content-Type: application/json" \
   -d '{
     "messages": [{"role": "user", "content": "Hello!"}],
     "max_tokens": 50
   }'
-```
 
-**Admin endpoints (port 8089):**
-```bash
-# Health and uptime
-curl http://localhost:8089/health
-
-# Prometheus-style metrics
+# Check metrics
 curl http://localhost:8089/metrics
 ```
 
-**From browser:**
-- Proxy health: http://localhost:8088/health
-- Admin health: http://localhost:8089/health
-- Metrics: http://localhost:8089/metrics
+## Command-Line Options
 
-**From any OpenAI-compatible client:**
-- Point your client to `http://localhost:8088`
-- All requests will be forwarded to llama.cpp and metrics will be collected
-
-### Architecture
-
-```
-Client/Browser → bioproxy proxy (8088) → llama.cpp (8081)
-                    ↓
-                 metrics
-                    ↓
-              Admin server (8089) → /health, /metrics
+```bash
+./bioproxy --help
 ```
 
-- **Proxy (8088)**: Forwards requests to llama.cpp, collects metrics
-- **Admin (8089)**: Provides health status and Prometheus-formatted metrics
+Options:
+- `-config` - Path to config file (default: `~/.config/bioproxy/config.json`)
+- `-host` - Proxy host (overrides config)
+- `-port` - Proxy port (overrides config)
+- `-admin-host` - Admin server host (overrides config)
+- `-admin-port` - Admin server port (overrides config)
+- `-backend` - Backend llama.cpp URL (overrides config)
+
+Example:
+```bash
+./bioproxy -config config.json -port 9000
+```
+
+## Configuration Reference
+
+See `config.example.json` for a complete example.
+
+**Required fields:**
+- `backend_url` - llama.cpp server URL
+
+**Optional fields:**
+- `proxy_host` - Proxy bind address (default: "localhost")
+- `proxy_port` - Proxy port (default: 8088)
+- `admin_host` - Admin bind address (default: "localhost")
+- `admin_port` - Admin port (default: 8089)
+- `warmup_check_interval` - Template check interval in seconds (default: 30)
+- `prefixes` - Template prefix mappings (object of prefix → file path)
+
+## Template Syntax
+
+Templates use `<{...}>` placeholders:
+
+**Message placeholder:**
+```
+System prompt here.
+
+User: <{message}>
+Assistant:
+```
+
+**File inclusion:**
+```
+<{/path/to/context.txt}>
+
+User question: <{message}>
+```
+
+**Note:** Placeholder replacement is non-recursive - patterns in substituted content are NOT processed.
+
+## Architecture
+
+```
+Client → Proxy (8088) → llama.cpp (8081)
+            ↓
+        Metrics
+            ↓
+    Admin Server (8089)
+            ↓
+    Template Watcher
+            ↓
+    Warmup Manager
+```
+
+**Components:**
+- **Proxy (port 8088)** - Forwards requests to llama.cpp, collects metrics
+- **Admin (port 8089)** - Health status and Prometheus metrics
+- **Template Watcher** - Monitors template files for changes
+- **Warmup Manager** - Automatically warms up changed templates
+
+## Current Features
+
+- ✅ **Reverse proxy** - Forwards all requests to llama.cpp with minimal overhead
+- ✅ **Admin endpoints** - Health and Prometheus metrics on separate port
+- ✅ **Template system** - File-based templates with message substitution
+- ✅ **Template monitoring** - Detects file changes via hash comparison
+- ✅ **Automatic warmup** - Background process warms templates at configurable intervals
+- ✅ **KV cache management** - Saves/restores llama.cpp KV cache per template
+
+## Roadmap
+
+**Phase 1: ✅ Basic Proxy** - Request forwarding and metrics
+**Phase 2: ✅ Admin Server** - Health and metrics endpoints
+**Phase 3: ✅ Template System** - File watching and processing
+**Phase 4: ✅ Warmup Manager** - Automatic KV cache warmup
+
+**Next:**
+- Phase 5: Template injection in proxy (intercept @prefix in user messages)
+- Phase 6: KV cache restore before user requests
+- Phase 7: Request queue with prioritization
 
 ## Development
 
@@ -101,38 +248,33 @@ Client/Browser → bioproxy proxy (8088) → llama.cpp (8081)
 go test ./...
 ```
 
-**Manual tests (requires llama.cpp):**
+**Manual tests (requires llama.cpp with --slot-save-path):**
 ```bash
-go clean -testcache && go test -tags=manual -v ./internal/proxy/...
+# See MANUAL_TESTING.md for complete guide
+go clean -testcache && go test -tags=manual -v ./...
 ```
 
 ### Project Structure
 
-- `cmd/bioproxy/` - Main executable
-- `internal/config/` - Configuration management
-- `internal/proxy/` - Reverse proxy implementation
-- `internal/admin/` - Admin server with health and metrics endpoints
-- `internal/template/` - Template watching and processing
+```
+bioproxy/
+├── cmd/bioproxy/          - Main executable
+├── internal/
+│   ├── config/           - Configuration management
+│   ├── proxy/            - Reverse proxy implementation
+│   ├── admin/            - Admin server (health, metrics)
+│   ├── template/         - Template watching and processing
+│   └── warmup/           - KV cache warmup manager
+├── WARMUP_DESIGN.md      - Warmup architecture design
+├── MANUAL_TESTING.md     - Manual testing guide
+└── config.example.json   - Example configuration
+```
 
-## Current Status
+### Documentation
 
-**Phase 1 Complete:** ✅ Basic reverse proxy
-- Forwards all HTTP requests to llama.cpp
-- Logs requests/responses
-- Handles backend errors gracefully
-- Minimal overhead (~1-2ms)
-
-**Phase 2 Complete:** ✅ Admin endpoints and metrics
-- Admin server on separate port (8089)
-- `/health` endpoint with uptime information
-- `/metrics` endpoint with Prometheus-style metrics
-- Metrics include: request counts by endpoint and status code
-- Thread-safe metrics collection
-
-**Coming Next:**
-- Phase 3: Template injection for chat completions
-- Phase 4: KV cache save/restore integration
-- Phase 5: Request queue with warmup prioritization
+- **WARMUP_DESIGN.md** - Complete warmup architecture and design decisions
+- **MANUAL_TESTING.md** - Guide for running manual tests with llama.cpp
+- **internal/\*/README.md** - Module-specific documentation
 
 ## License
 
