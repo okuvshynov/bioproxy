@@ -17,7 +17,7 @@ Note: `--slot-save-path` is required for KV cache warmup to work.
 ### Installation
 
 ```bash
-git clone https://github.com/yourusername/bioproxy
+git clone https://github.com/okuvshynov/bioproxy
 cd bioproxy
 go build -o bioproxy ./cmd/bioproxy
 ```
@@ -36,17 +36,27 @@ You are an expert coding assistant. You provide clear, working code examples.
 Always explain your reasoning and include error handling.
 
 User question: <{message}>
-
-Answer:
 ```
 
 Create `templates/debug_helper.txt`:
 ```
 You are a debugging expert. Analyze code issues systematically.
 
+Reference documentation: <{templates/debugging_guide.txt}>
+
 Problem: <{message}>
 
 Analysis:
+```
+
+Create `templates/debugging_guide.txt`:
+```
+Common debugging steps:
+1. Reproduce the issue consistently
+2. Isolate the problem area
+3. Check error messages and logs
+4. Verify input data and assumptions
+5. Test fixes incrementally
 ```
 
 **2. Create configuration file:**
@@ -191,12 +201,22 @@ Assistant:
 
 **File inclusion:**
 ```
-<{/path/to/context.txt}>
+Reference documentation: <{templates/debugging_guide.txt}>
 
-User question: <{message}>
+Problem: <{message}>
 ```
 
-**Note:** Placeholder replacement is non-recursive - patterns in substituted content are NOT processed.
+When processed, the file content replaces the placeholder:
+```
+Reference documentation: Common debugging steps:
+1. Reproduce the issue consistently
+2. Isolate the problem area
+...
+
+Problem: [user's actual message]
+```
+
+**Note:** Placeholder replacement is non-recursive - patterns in substituted content are NOT processed. This prevents infinite loops and unexpected behavior.
 
 ## Architecture
 
