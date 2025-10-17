@@ -77,13 +77,13 @@ func main() {
 		}
 	}
 
-	// Create warmup manager
-	log.Println("INFO: Creating warmup manager...")
-	warmupMgr := warmup.New(cfg, watcher, cfg.BackendURL)
-
 	// Create shared metrics instance
-	// Both proxy and admin server will use this
+	// Both proxy, admin server, and warmup manager will use this
 	metrics := admin.NewMetrics()
+
+	// Create warmup manager with metrics
+	log.Println("INFO: Creating warmup manager...")
+	warmupMgr := warmup.New(cfg, watcher, cfg.BackendURL, metrics)
 
 	// Create the proxy with metrics collection
 	log.Println("INFO: Creating proxy server...")

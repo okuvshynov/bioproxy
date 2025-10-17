@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oleksandr/bioproxy/internal/admin"
 	"github.com/oleksandr/bioproxy/internal/config"
 	"github.com/oleksandr/bioproxy/internal/template"
 )
@@ -86,8 +87,11 @@ User question: <{message}>`
 
 	t.Log("✓ Template added to watcher")
 
+	// Create metrics
+	metrics := admin.NewMetrics()
+
 	// Create and start warmup manager
-	mgr := New(cfg, watcher, llamaCppURL)
+	mgr := New(cfg, watcher, llamaCppURL, metrics)
 
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("Failed to start warmup manager: %v", err)
@@ -152,7 +156,8 @@ func TestManualWarmupTemplateChange(t *testing.T) {
 		t.Fatalf("Failed to add template: %v", err)
 	}
 
-	mgr := New(cfg, watcher, llamaCppURL)
+	metrics := admin.NewMetrics()
+	mgr := New(cfg, watcher, llamaCppURL, metrics)
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("Failed to start warmup manager: %v", err)
 	}
@@ -254,7 +259,8 @@ func TestManualWarmupMultipleTemplates(t *testing.T) {
 
 	t.Logf("✓ Added %d templates to watcher", len(templates))
 
-	mgr := New(cfg, watcher, llamaCppURL)
+	metrics := admin.NewMetrics()
+	mgr := New(cfg, watcher, llamaCppURL, metrics)
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("Failed to start warmup manager: %v", err)
 	}
@@ -319,7 +325,8 @@ func TestManualWarmupManagerLifecycle(t *testing.T) {
 	}
 
 	watcher := template.NewWatcher()
-	mgr := New(cfg, watcher, llamaCppURL)
+	metrics := admin.NewMetrics()
+	mgr := New(cfg, watcher, llamaCppURL, metrics)
 
 	// Test Start
 	if err := mgr.Start(); err != nil {
@@ -389,7 +396,8 @@ Assistant:`
 		t.Fatalf("Failed to add template: %v", err)
 	}
 
-	mgr := New(cfg, watcher, llamaCppURL)
+	metrics := admin.NewMetrics()
+	mgr := New(cfg, watcher, llamaCppURL, metrics)
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("Failed to start warmup manager: %v", err)
 	}
@@ -442,14 +450,16 @@ func TestManualDirectKVCacheOperations(t *testing.T) {
 	}
 
 	watcher := template.NewWatcher()
-	mgr := New(cfg, watcher, llamaCppURL)
+	metrics := admin.NewMetrics()
+	mgr := New(cfg, watcher, llamaCppURL, metrics)
 
+	testPrefix := "@manual_test"
 	testFilename := "manual_test_cache.bin"
 
 	t.Logf("Testing KV cache save with filename: %s", testFilename)
 
 	// Test save
-	if err := mgr.saveKVCache(testFilename); err != nil {
+	if err := mgr.saveKVCache(testPrefix, testFilename); err != nil {
 		t.Logf("Save failed (may be expected if slot is empty): %v", err)
 		// Don't fail - slot might be empty
 	} else {
@@ -459,7 +469,7 @@ func TestManualDirectKVCacheOperations(t *testing.T) {
 	// Test restore
 	t.Logf("Testing KV cache restore with filename: %s", testFilename)
 
-	if err := mgr.restoreKVCache(testFilename); err != nil {
+	if err := mgr.restoreKVCache(testPrefix, testFilename); err != nil {
 		t.Logf("Restore failed (may be expected if file doesn't exist): %v", err)
 		// Don't fail - file might not exist
 	} else {

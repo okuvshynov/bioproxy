@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oleksandr/bioproxy/internal/admin"
 	"github.com/oleksandr/bioproxy/internal/config"
 	"github.com/oleksandr/bioproxy/internal/template"
 )
@@ -177,8 +178,11 @@ func TestManagerLifecycle(t *testing.T) {
 	// Create watcher
 	watcher := template.NewWatcher()
 
+	// Create metrics
+	metrics := admin.NewMetrics()
+
 	// Create manager
-	mgr := New(cfg, watcher, mock.URL())
+	mgr := New(cfg, watcher, mock.URL(), metrics)
 
 	// Test Start
 	if err := mgr.Start(); err != nil {
@@ -238,8 +242,11 @@ func TestWarmupTemplate(t *testing.T) {
 		t.Fatalf("Failed to add template: %v", err)
 	}
 
+	// Create metrics
+	metrics := admin.NewMetrics()
+
 	// Create manager
-	mgr := New(cfg, watcher, mock.URL())
+	mgr := New(cfg, watcher, mock.URL(), metrics)
 
 	// Execute warmup
 	if err := mgr.warmupTemplate("@test"); err != nil {
@@ -297,8 +304,11 @@ func TestWarmupWithExistingCache(t *testing.T) {
 		t.Fatalf("Failed to add template: %v", err)
 	}
 
+	// Create metrics
+	metrics := admin.NewMetrics()
+
 	// Create manager
-	mgr := New(cfg, watcher, mock.URL())
+	mgr := New(cfg, watcher, mock.URL(), metrics)
 
 	// Execute warmup
 	if err := mgr.warmupTemplate("@test"); err != nil {
@@ -348,8 +358,11 @@ func TestWarmupCompletionFailure(t *testing.T) {
 		t.Fatalf("Failed to add template: %v", err)
 	}
 
+	// Create metrics
+	metrics := admin.NewMetrics()
+
 	// Create manager
-	mgr := New(cfg, watcher, mock.URL())
+	mgr := New(cfg, watcher, mock.URL(), metrics)
 
 	// Execute warmup - should fail
 	if err := mgr.warmupTemplate("@test"); err == nil {
@@ -393,8 +406,11 @@ func TestWarmupSaveFailure(t *testing.T) {
 		t.Fatalf("Failed to add template: %v", err)
 	}
 
+	// Create metrics
+	metrics := admin.NewMetrics()
+
 	// Create manager
-	mgr := New(cfg, watcher, mock.URL())
+	mgr := New(cfg, watcher, mock.URL(), metrics)
 
 	// Execute warmup - should fail
 	if err := mgr.warmupTemplate("@test"); err == nil {
@@ -433,8 +449,11 @@ func TestCheckAndWarmup(t *testing.T) {
 		t.Fatalf("Failed to add template: %v", err)
 	}
 
+	// Create metrics
+	metrics := admin.NewMetrics()
+
 	// Create manager
-	mgr := New(cfg, watcher, mock.URL())
+	mgr := New(cfg, watcher, mock.URL(), metrics)
 
 	// Check and warmup (should warmup initial template)
 	mgr.checkAndWarmup()
@@ -480,10 +499,11 @@ func TestRestoreKVCache(t *testing.T) {
 	}
 
 	watcher := template.NewWatcher()
-	mgr := New(cfg, watcher, mock.URL())
+	metrics := admin.NewMetrics()
+	mgr := New(cfg, watcher, mock.URL(), metrics)
 
 	// Test successful restore
-	if err := mgr.restoreKVCache("test.bin"); err != nil {
+	if err := mgr.restoreKVCache("@test", "test.bin"); err != nil {
 		t.Errorf("Restore should succeed: %v", err)
 	}
 
@@ -492,7 +512,7 @@ func TestRestoreKVCache(t *testing.T) {
 	mock.restoreFailures["missing.bin"] = true
 	mock.mu.Unlock()
 
-	if err := mgr.restoreKVCache("missing.bin"); err == nil {
+	if err := mgr.restoreKVCache("@test", "missing.bin"); err == nil {
 		t.Error("Expected error when cache file not found")
 	} else if !strings.Contains(err.Error(), "404") {
 		t.Errorf("Expected 404 error, got: %v", err)
@@ -509,10 +529,11 @@ func TestSaveKVCache(t *testing.T) {
 	}
 
 	watcher := template.NewWatcher()
-	mgr := New(cfg, watcher, mock.URL())
+	metrics := admin.NewMetrics()
+	mgr := New(cfg, watcher, mock.URL(), metrics)
 
 	// Test successful save
-	if err := mgr.saveKVCache("test.bin"); err != nil {
+	if err := mgr.saveKVCache("@test", "test.bin"); err != nil {
 		t.Errorf("Save should succeed: %v", err)
 	}
 
@@ -521,7 +542,7 @@ func TestSaveKVCache(t *testing.T) {
 	mock.saveFailures["fail.bin"] = true
 	mock.mu.Unlock()
 
-	if err := mgr.saveKVCache("fail.bin"); err == nil {
+	if err := mgr.saveKVCache("@test", "fail.bin"); err == nil {
 		t.Error("Expected error when save fails")
 	}
 }
@@ -536,7 +557,8 @@ func TestSendWarmupRequest(t *testing.T) {
 	}
 
 	watcher := template.NewWatcher()
-	mgr := New(cfg, watcher, mock.URL())
+	metrics := admin.NewMetrics()
+	mgr := New(cfg, watcher, mock.URL(), metrics)
 
 	// Test successful request
 	content := "Test warmup content"

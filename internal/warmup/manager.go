@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oleksandr/bioproxy/internal/admin"
 	"github.com/oleksandr/bioproxy/internal/config"
 	"github.com/oleksandr/bioproxy/internal/template"
 )
@@ -22,6 +23,7 @@ type Manager struct {
 	watcher    *template.Watcher
 	backendURL string
 	client     *http.Client
+	metrics    *admin.Metrics
 
 	mu      sync.Mutex
 	running bool
@@ -30,11 +32,12 @@ type Manager struct {
 }
 
 // New creates a new warmup manager
-func New(cfg *config.Config, watcher *template.Watcher, backendURL string) *Manager {
+func New(cfg *config.Config, watcher *template.Watcher, backendURL string, metrics *admin.Metrics) *Manager {
 	return &Manager{
 		config:     cfg,
 		watcher:    watcher,
 		backendURL: strings.TrimSuffix(backendURL, "/"),
+		metrics:    metrics,
 		client: &http.Client{
 			Timeout: 60 * time.Second, // Warmup can take a while
 		},
@@ -100,6 +103,9 @@ func (m *Manager) checkLoop() {
 func (m *Manager) checkAndWarmup() {
 	log.Printf("Checking templates for changes...")
 
+	// Record warmup check metric
+	m.metrics.RecordWarmupCheck()
+
 	// Get list of changed templates
 	changedPrefixes := m.watcher.CheckForChanges()
 
@@ -128,11 +134,14 @@ func (m *Manager) checkAndWarmup() {
 func (m *Manager) warmupTemplate(prefix string) error {
 	log.Printf("Starting warmup for %s", prefix)
 
+	// Track warmup duration
+	startTime := time.Now()
+
 	// Get cache filename (remove @ prefix if present)
 	cacheFilename := strings.TrimPrefix(prefix, "@") + ".bin"
 
 	// Step 1: Try to restore existing KV cache (may fail first time)
-	if err := m.restoreKVCache(cacheFilename); err != nil {
+	if err := m.restoreKVCache(prefix, cacheFilename); err != nil {
 		// Log but don't fail - this is expected on first warmup
 		log.Printf("INFO: Could not restore KV cache for %s (may be first warmup): %v", prefix, err)
 	}
@@ -140,24 +149,31 @@ func (m *Manager) warmupTemplate(prefix string) error {
 	// Step 2: Process template with empty message to get warmup content
 	warmupContent, err := m.watcher.ProcessTemplate(prefix, "")
 	if err != nil {
+		m.metrics.RecordWarmupError(prefix, "template_error")
 		return fmt.Errorf("failed to process template: %w", err)
 	}
 
 	// Step 3: Send warmup request to llama.cpp
 	if err := m.sendWarmupRequest(prefix, warmupContent); err != nil {
+		m.metrics.RecordWarmupError(prefix, "completion_failed")
 		return fmt.Errorf("warmup request failed: %w", err)
 	}
 
 	// Step 4: Save KV cache
-	if err := m.saveKVCache(cacheFilename); err != nil {
+	if err := m.saveKVCache(prefix, cacheFilename); err != nil {
+		m.metrics.RecordWarmupError(prefix, "save_failed")
 		return fmt.Errorf("failed to save KV cache: %w", err)
 	}
+
+	// Record successful warmup execution and duration
+	duration := time.Since(startTime).Seconds()
+	m.metrics.RecordWarmupExecution(prefix, duration)
 
 	return nil
 }
 
 // restoreKVCache restores KV cache from file
-func (m *Manager) restoreKVCache(filename string) error {
+func (m *Manager) restoreKVCache(prefix, filename string) error {
 	url := fmt.Sprintf("%s/slots/0?action=restore", m.backendURL)
 
 	reqBody := map[string]string{
@@ -166,17 +182,20 @@ func (m *Manager) restoreKVCache(filename string) error {
 
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
+		m.metrics.RecordKVCacheRestore(prefix, "error")
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
+		m.metrics.RecordKVCacheRestore(prefix, "error")
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := m.client.Do(req)
 	if err != nil {
+		m.metrics.RecordKVCacheRestore(prefix, "error")
 		return fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
@@ -185,19 +204,22 @@ func (m *Manager) restoreKVCache(filename string) error {
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode == http.StatusNotFound {
+		m.metrics.RecordKVCacheRestore(prefix, "not_found")
 		return fmt.Errorf("cache file not found (404)")
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		m.metrics.RecordKVCacheRestore(prefix, "error")
 		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 
+	m.metrics.RecordKVCacheRestore(prefix, "success")
 	log.Printf("KV cache restored for %s", filename)
 	return nil
 }
 
 // saveKVCache saves KV cache to file
-func (m *Manager) saveKVCache(filename string) error {
+func (m *Manager) saveKVCache(prefix, filename string) error {
 	url := fmt.Sprintf("%s/slots/0?action=save", m.backendURL)
 
 	reqBody := map[string]string{
@@ -228,6 +250,7 @@ func (m *Manager) saveKVCache(filename string) error {
 		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 
+	m.metrics.RecordKVCacheSave(prefix)
 	log.Printf("KV cache saved for %s", filename)
 	return nil
 }

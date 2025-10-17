@@ -34,7 +34,7 @@ type Server struct {
 	running bool
 }
 
-// Metrics holds statistical data about proxy requests.
+// Metrics holds statistical data about proxy requests and warmup operations.
 // All access to metrics must be synchronized via the mutex.
 type Metrics struct {
 	// mu protects concurrent access to metrics data
@@ -50,13 +50,47 @@ type Metrics struct {
 
 	// StartTime records when metrics collection started
 	StartTime time.Time
+
+	// Warmup metrics
+
+	// WarmupChecksTotal is the total number of warmup check cycles performed
+	WarmupChecksTotal int64
+
+	// WarmupExecutions tracks warmup executions per template prefix
+	// Structure: WarmupExecutions[prefix] = count
+	WarmupExecutions map[string]int64
+
+	// WarmupErrors tracks errors per template prefix and error type
+	// Structure: WarmupErrors[prefix][errorType] = count
+	// Error types: "restore_failed", "completion_failed", "save_failed", "template_error"
+	WarmupErrors map[string]map[string]int64
+
+	// WarmupDurationTotal tracks total warmup duration per template (in seconds)
+	WarmupDurationTotal map[string]float64
+
+	// WarmupDurationCount tracks number of warmup operations (for calculating average)
+	WarmupDurationCount map[string]int64
+
+	// KVCacheSaves tracks successful KV cache saves per template
+	KVCacheSaves map[string]int64
+
+	// KVCacheRestores tracks KV cache restore attempts per template and status
+	// Structure: KVCacheRestores[prefix][status] = count
+	// Status values: "success", "not_found", "error"
+	KVCacheRestores map[string]map[string]int64
 }
 
 // NewMetrics creates a new Metrics instance.
 func NewMetrics() *Metrics {
 	return &Metrics{
-		RequestCount: make(map[string]map[string]int64),
-		StartTime:    time.Now(),
+		RequestCount:        make(map[string]map[string]int64),
+		StartTime:           time.Now(),
+		WarmupExecutions:    make(map[string]int64),
+		WarmupErrors:        make(map[string]map[string]int64),
+		WarmupDurationTotal: make(map[string]float64),
+		WarmupDurationCount: make(map[string]int64),
+		KVCacheSaves:        make(map[string]int64),
+		KVCacheRestores:     make(map[string]map[string]int64),
 	}
 }
 
@@ -82,6 +116,60 @@ func (m *Metrics) RecordRequest(endpoint string, statusCode int) {
 
 	// Increment total request counter
 	m.TotalRequests++
+}
+
+// RecordWarmupCheck increments the total warmup check counter.
+// This should be called once per warmup check cycle.
+func (m *Metrics) RecordWarmupCheck() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.WarmupChecksTotal++
+}
+
+// RecordWarmupExecution records a warmup execution for a template.
+// prefix: The template prefix (e.g., "@code")
+// duration: How long the warmup took in seconds
+func (m *Metrics) RecordWarmupExecution(prefix string, duration float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.WarmupExecutions[prefix]++
+	m.WarmupDurationTotal[prefix] += duration
+	m.WarmupDurationCount[prefix]++
+}
+
+// RecordWarmupError records a warmup error for a template.
+// prefix: The template prefix (e.g., "@code")
+// errorType: Type of error ("restore_failed", "completion_failed", "save_failed", "template_error")
+func (m *Metrics) RecordWarmupError(prefix string, errorType string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.WarmupErrors[prefix] == nil {
+		m.WarmupErrors[prefix] = make(map[string]int64)
+	}
+	m.WarmupErrors[prefix][errorType]++
+}
+
+// RecordKVCacheSave records a successful KV cache save operation.
+// prefix: The template prefix (e.g., "@code")
+func (m *Metrics) RecordKVCacheSave(prefix string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.KVCacheSaves[prefix]++
+}
+
+// RecordKVCacheRestore records a KV cache restore attempt.
+// prefix: The template prefix (e.g., "@code")
+// status: Status of the restore ("success", "not_found", "error")
+func (m *Metrics) RecordKVCacheRestore(prefix string, status string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.KVCacheRestores[prefix] == nil {
+		m.KVCacheRestores[prefix] = make(map[string]int64)
+	}
+	m.KVCacheRestores[prefix][status]++
 }
 
 // GetSnapshot returns a read-only snapshot of the current metrics.
@@ -282,4 +370,79 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "# HELP bioproxy_uptime_seconds Time since server started in seconds\n")
 	fmt.Fprintf(w, "# TYPE bioproxy_uptime_seconds gauge\n")
 	fmt.Fprintf(w, "bioproxy_uptime_seconds %.2f\n", uptime)
+
+	fmt.Fprintf(w, "\n")
+
+	// Write metric: bioproxy_warmup_checks_total
+	fmt.Fprintf(w, "# HELP bioproxy_warmup_checks_total Total number of warmup check cycles performed\n")
+	fmt.Fprintf(w, "# TYPE bioproxy_warmup_checks_total counter\n")
+	fmt.Fprintf(w, "bioproxy_warmup_checks_total %d\n", s.metrics.WarmupChecksTotal)
+
+	fmt.Fprintf(w, "\n")
+
+	// Write metric: bioproxy_warmup_executions_total
+	s.metrics.mu.RLock()
+	if len(s.metrics.WarmupExecutions) > 0 {
+		fmt.Fprintf(w, "# HELP bioproxy_warmup_executions_total Number of warmup executions per template\n")
+		fmt.Fprintf(w, "# TYPE bioproxy_warmup_executions_total counter\n")
+		for prefix, count := range s.metrics.WarmupExecutions {
+			fmt.Fprintf(w, "bioproxy_warmup_executions_total{prefix=\"%s\"} %d\n", prefix, count)
+		}
+		fmt.Fprintf(w, "\n")
+	}
+
+	// Write metric: bioproxy_warmup_errors_total
+	if len(s.metrics.WarmupErrors) > 0 {
+		fmt.Fprintf(w, "# HELP bioproxy_warmup_errors_total Number of warmup errors by template and error type\n")
+		fmt.Fprintf(w, "# TYPE bioproxy_warmup_errors_total counter\n")
+		for prefix, errorTypes := range s.metrics.WarmupErrors {
+			for errorType, count := range errorTypes {
+				fmt.Fprintf(w, "bioproxy_warmup_errors_total{prefix=\"%s\",type=\"%s\"} %d\n", prefix, errorType, count)
+			}
+		}
+		fmt.Fprintf(w, "\n")
+	}
+
+	// Write metric: bioproxy_warmup_duration_seconds_total
+	if len(s.metrics.WarmupDurationTotal) > 0 {
+		fmt.Fprintf(w, "# HELP bioproxy_warmup_duration_seconds_total Total warmup duration in seconds per template\n")
+		fmt.Fprintf(w, "# TYPE bioproxy_warmup_duration_seconds_total counter\n")
+		for prefix, duration := range s.metrics.WarmupDurationTotal {
+			fmt.Fprintf(w, "bioproxy_warmup_duration_seconds_total{prefix=\"%s\"} %.2f\n", prefix, duration)
+		}
+		fmt.Fprintf(w, "\n")
+	}
+
+	// Write metric: bioproxy_warmup_duration_seconds_count
+	if len(s.metrics.WarmupDurationCount) > 0 {
+		fmt.Fprintf(w, "# HELP bioproxy_warmup_duration_seconds_count Number of warmup duration measurements per template\n")
+		fmt.Fprintf(w, "# TYPE bioproxy_warmup_duration_seconds_count counter\n")
+		for prefix, count := range s.metrics.WarmupDurationCount {
+			fmt.Fprintf(w, "bioproxy_warmup_duration_seconds_count{prefix=\"%s\"} %d\n", prefix, count)
+		}
+		fmt.Fprintf(w, "\n")
+	}
+
+	// Write metric: bioproxy_kv_cache_saves_total
+	if len(s.metrics.KVCacheSaves) > 0 {
+		fmt.Fprintf(w, "# HELP bioproxy_kv_cache_saves_total Number of successful KV cache saves per template\n")
+		fmt.Fprintf(w, "# TYPE bioproxy_kv_cache_saves_total counter\n")
+		for prefix, count := range s.metrics.KVCacheSaves {
+			fmt.Fprintf(w, "bioproxy_kv_cache_saves_total{prefix=\"%s\"} %d\n", prefix, count)
+		}
+		fmt.Fprintf(w, "\n")
+	}
+
+	// Write metric: bioproxy_kv_cache_restores_total
+	if len(s.metrics.KVCacheRestores) > 0 {
+		fmt.Fprintf(w, "# HELP bioproxy_kv_cache_restores_total Number of KV cache restore attempts per template and status\n")
+		fmt.Fprintf(w, "# TYPE bioproxy_kv_cache_restores_total counter\n")
+		for prefix, statuses := range s.metrics.KVCacheRestores {
+			for status, count := range statuses {
+				fmt.Fprintf(w, "bioproxy_kv_cache_restores_total{prefix=\"%s\",status=\"%s\"} %d\n", prefix, status, count)
+			}
+		}
+		fmt.Fprintf(w, "\n")
+	}
+	s.metrics.mu.RUnlock()
 }
