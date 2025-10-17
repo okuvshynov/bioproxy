@@ -5,11 +5,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/oleksandr/bioproxy/internal/config"
+	"github.com/oleksandr/bioproxy/internal/template"
 )
 
 // createTestConfig creates a minimal config for testing
@@ -18,14 +20,21 @@ func createTestConfig(backendURL string) *config.Config {
 		ProxyHost:  "localhost",
 		ProxyPort:  0, // Let the OS assign a port for testing
 		BackendURL: backendURL,
+		Prefixes:   make(map[string]string), // Empty template mapping
 	}
+}
+
+// createTestWatcher creates an empty template watcher for testing
+func createTestWatcher() *template.Watcher {
+	return template.NewWatcher()
 }
 
 // TestNew verifies that creating a new proxy works correctly
 func TestNew(t *testing.T) {
 	cfg := createTestConfig("http://localhost:8081")
+	watcher := createTestWatcher()
 
-	proxy, err := New(cfg, nil)
+	proxy, err := New(cfg, watcher, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -66,7 +75,8 @@ func TestNewInvalidBackendURL(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := createTestConfig(tc.backendURL)
-			proxy, err := New(cfg, nil)
+			watcher := createTestWatcher()
+			proxy, err := New(cfg, watcher, nil)
 
 			if err == nil {
 				t.Errorf("Expected error for invalid backend URL %s, got nil", tc.backendURL)
@@ -105,7 +115,8 @@ func TestProxyForwarding(t *testing.T) {
 
 	// Create proxy pointing to the mock backend
 	cfg := createTestConfig(backend.URL)
-	proxy, err := New(cfg, nil)
+	watcher := createTestWatcher()
+	proxy, err := New(cfg, watcher, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -165,7 +176,8 @@ func TestProxyForwardingDifferentMethods(t *testing.T) {
 			defer backend.Close()
 
 			cfg := createTestConfig(backend.URL)
-			proxy, err := New(cfg, nil)
+			watcher := createTestWatcher()
+			proxy, err := New(cfg, watcher, nil)
 			if err != nil {
 				t.Fatalf("Failed to create proxy: %v", err)
 			}
@@ -195,7 +207,8 @@ func TestProxyHeaderForwarding(t *testing.T) {
 	defer backend.Close()
 
 	cfg := createTestConfig(backend.URL)
-	proxy, err := New(cfg, nil)
+	watcher := createTestWatcher()
+	proxy, err := New(cfg, watcher, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -226,7 +239,8 @@ func TestProxyHeaderForwarding(t *testing.T) {
 func TestProxyBackendError(t *testing.T) {
 	// Create proxy pointing to a non-existent backend
 	cfg := createTestConfig("http://localhost:99999") // Invalid port
-	proxy, err := New(cfg, nil)
+	watcher := createTestWatcher()
+	proxy, err := New(cfg, watcher, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -258,7 +272,8 @@ func TestStartStop(t *testing.T) {
 	// Use a specific port for this test
 	cfg.ProxyPort = 0 // Let OS assign port
 
-	proxy, err := New(cfg, nil)
+	watcher := createTestWatcher()
+	proxy, err := New(cfg, watcher, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -324,7 +339,8 @@ func TestProxyIntegration(t *testing.T) {
 	cfg.ProxyHost = "localhost"
 	cfg.ProxyPort = 0 // Let OS assign port
 
-	proxy, err := New(cfg, nil)
+	watcher := createTestWatcher()
+	proxy, err := New(cfg, watcher, nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -387,7 +403,8 @@ func TestProxyDifferentPaths(t *testing.T) {
 			defer backend.Close()
 
 			cfg := createTestConfig(backend.URL)
-			proxy, err := New(cfg, nil)
+			watcher := createTestWatcher()
+			proxy, err := New(cfg, watcher, nil)
 			if err != nil {
 				t.Fatalf("Failed to create proxy: %v", err)
 			}
@@ -401,5 +418,195 @@ func TestProxyDifferentPaths(t *testing.T) {
 				t.Errorf("Expected path %s, got %s", path, receivedPath)
 			}
 		})
+	}
+}
+
+// TestTemplateInjection tests that template prefixes are detected and processed
+func TestTemplateInjection(t *testing.T) {
+	// Create a temporary template file
+	tmpDir := t.TempDir()
+	templateFile := tmpDir + "/test_template.txt"
+	templateContent := "You are a test assistant.\n\nUser question: <{message}>"
+
+	err := os.WriteFile(templateFile, []byte(templateContent), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create template file: %v", err)
+	}
+
+	// Track what the backend receives
+	var receivedBody string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		receivedBody = string(bodyBytes)
+
+		// Send back a valid chat completion response
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"test response"}}]}`))
+	}))
+	defer backend.Close()
+
+	// Create watcher and add template
+	watcher := template.NewWatcher()
+	err = watcher.AddTemplate("@test", templateFile)
+	if err != nil {
+		t.Fatalf("Failed to add template: %v", err)
+	}
+
+	// Create proxy with the watcher
+	cfg := createTestConfig(backend.URL)
+	cfg.Prefixes = map[string]string{"@test": templateFile}
+	proxy, err := New(cfg, watcher, nil)
+	if err != nil {
+		t.Fatalf("Failed to create proxy: %v", err)
+	}
+
+	// Create a request with the template prefix
+	requestBody := `{"messages":[{"role":"user","content":"@test How do I test?"}]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Send through proxy
+	rr := httptest.NewRecorder()
+	proxy.handleChatCompletion(rr, req)
+
+	// Verify the backend received the processed template, not the original
+	if !strings.Contains(receivedBody, "You are a test assistant") {
+		t.Errorf("Expected processed template in backend request, got: %s", receivedBody)
+	}
+
+	if !strings.Contains(receivedBody, "User question: How do I test?") {
+		t.Errorf("Expected user message in processed template, got: %s", receivedBody)
+	}
+
+	// Verify the original prefix is NOT in the request
+	if strings.Contains(receivedBody, "@test") {
+		t.Errorf("Original prefix should not be in backend request, got: %s", receivedBody)
+	}
+}
+
+// TestTemplateInjectionNoPrefix tests that messages without prefixes pass through unchanged
+func TestTemplateInjectionNoPrefix(t *testing.T) {
+	// Track what the backend receives
+	var receivedBody string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		receivedBody = string(bodyBytes)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"test"}}]}`))
+	}))
+	defer backend.Close()
+
+	// Create proxy with empty watcher (no templates)
+	cfg := createTestConfig(backend.URL)
+	watcher := template.NewWatcher()
+	proxy, err := New(cfg, watcher, nil)
+	if err != nil {
+		t.Fatalf("Failed to create proxy: %v", err)
+	}
+
+	// Create a request WITHOUT a template prefix
+	originalMessage := "Just a regular question"
+	requestBody := fmt.Sprintf(`{"messages":[{"role":"user","content":"%s"}]}`, originalMessage)
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Send through proxy
+	rr := httptest.NewRecorder()
+	proxy.handleChatCompletion(rr, req)
+
+	// Verify the message passed through unchanged
+	if !strings.Contains(receivedBody, originalMessage) {
+		t.Errorf("Expected original message to pass through, got: %s", receivedBody)
+	}
+}
+
+// TestTemplateInjectionMultiTurn tests that only the last user message is checked
+func TestTemplateInjectionMultiTurn(t *testing.T) {
+	// Create a template
+	tmpDir := t.TempDir()
+	templateFile := tmpDir + "/test_template.txt"
+	templateContent := "Template: <{message}>"
+
+	err := os.WriteFile(templateFile, []byte(templateContent), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create template file: %v", err)
+	}
+
+	// Track what the backend receives
+	var receivedBody string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		receivedBody = string(bodyBytes)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"test"}}]}`))
+	}))
+	defer backend.Close()
+
+	// Create watcher and add template
+	watcher := template.NewWatcher()
+	err = watcher.AddTemplate("@test", templateFile)
+	if err != nil {
+		t.Fatalf("Failed to add template: %v", err)
+	}
+
+	// Create proxy
+	cfg := createTestConfig(backend.URL)
+	cfg.Prefixes = map[string]string{"@test": templateFile}
+	proxy, err := New(cfg, watcher, nil)
+	if err != nil {
+		t.Fatalf("Failed to create proxy: %v", err)
+	}
+
+	// Create a multi-turn conversation where only the LAST message has the prefix
+	requestBody := `{
+		"messages":[
+			{"role":"user","content":"First message without prefix"},
+			{"role":"assistant","content":"First response"},
+			{"role":"user","content":"@test Second message with prefix"}
+		]
+	}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(requestBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	// Send through proxy
+	rr := httptest.NewRecorder()
+	proxy.handleChatCompletion(rr, req)
+
+	// Verify only the last message was processed
+	if !strings.Contains(receivedBody, "Template: Second message with prefix") {
+		t.Errorf("Expected last message to be processed, got: %s", receivedBody)
+	}
+
+	// First message should still be there unchanged
+	if !strings.Contains(receivedBody, "First message without prefix") {
+		t.Errorf("Expected first message to remain unchanged, got: %s", receivedBody)
+	}
+}
+
+// TestTemplateInjectionInvalidJSON tests error handling for invalid JSON
+func TestTemplateInjectionInvalidJSON(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	cfg := createTestConfig(backend.URL)
+	watcher := template.NewWatcher()
+	proxy, err := New(cfg, watcher, nil)
+	if err != nil {
+		t.Fatalf("Failed to create proxy: %v", err)
+	}
+
+	// Send invalid JSON
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader("{invalid json"))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	proxy.handleChatCompletion(rr, req)
+
+	// Should get a 400 Bad Request
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400 for invalid JSON, got %d", rr.Code)
 	}
 }

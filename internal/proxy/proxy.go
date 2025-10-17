@@ -1,16 +1,21 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/oleksandr/bioproxy/internal/admin"
 	"github.com/oleksandr/bioproxy/internal/config"
+	"github.com/oleksandr/bioproxy/internal/template"
 )
 
 // Proxy represents the reverse proxy server that forwards requests to llama.cpp.
@@ -29,6 +34,9 @@ type Proxy struct {
 	// server is the HTTP server instance
 	server *http.Server
 
+	// watcher monitors templates and processes them for injection
+	watcher *template.Watcher
+
 	// metrics holds request statistics (can be nil if metrics not enabled)
 	metrics *admin.Metrics
 
@@ -40,12 +48,15 @@ type Proxy struct {
 }
 
 // New creates a new Proxy instance with the given configuration.
-// It parses the backend URL and sets up the reverse proxy.
+// It parses the backend URL and sets up the reverse proxy with template injection support.
 //
-// The metrics parameter is optional - pass nil to disable metrics collection.
+// Parameters:
+//   - cfg: Proxy configuration including backend URL and template mappings
+//   - watcher: Template watcher for processing template injections (required)
+//   - metrics: Optional metrics collector (pass nil to disable)
 //
 // Returns an error if the backend URL is invalid.
-func New(cfg *config.Config, metrics *admin.Metrics) (*Proxy, error) {
+func New(cfg *config.Config, watcher *template.Watcher, metrics *admin.Metrics) (*Proxy, error) {
 	// Parse the backend URL to ensure it's valid
 	backend, err := url.Parse(cfg.BackendURL)
 	if err != nil {
@@ -56,6 +67,7 @@ func New(cfg *config.Config, metrics *admin.Metrics) (*Proxy, error) {
 	p := &Proxy{
 		config:  cfg,
 		backend: backend,
+		watcher: watcher,
 		metrics: metrics,
 		running: false,
 	}
@@ -143,6 +155,10 @@ func New(cfg *config.Config, metrics *admin.Metrics) (*Proxy, error) {
 // Start begins listening for HTTP requests on the configured proxy port.
 // This is a blocking call that runs until Stop() is called or an error occurs.
 //
+// The proxy uses custom routing:
+//   - POST /v1/chat/completions -> handleChatCompletion (with template injection)
+//   - All other requests -> reverseProxy (direct passthrough)
+//
 // Returns an error if the server fails to start or if already running.
 func (p *Proxy) Start() error {
 	p.mu.Lock()
@@ -156,10 +172,25 @@ func (p *Proxy) Start() error {
 	// Build the listen address from config
 	addr := fmt.Sprintf("%s:%d", p.config.ProxyHost, p.config.ProxyPort)
 
-	// Create the HTTP server
+	// Create a custom ServeMux for routing
+	// This allows us to intercept specific endpoints while passing through others
+	mux := http.NewServeMux()
+
+	// Route chat completion requests to our custom handler for template injection
+	mux.HandleFunc("/v1/chat/completions", p.handleChatCompletion)
+
+	// Route all other requests to the reverse proxy for direct passthrough
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Only use reverse proxy for non-chat-completion requests
+		if r.URL.Path != "/v1/chat/completions" {
+			p.reverseProxy.ServeHTTP(w, r)
+		}
+	})
+
+	// Create the HTTP server with our custom mux
 	p.server = &http.Server{
 		Addr:    addr,
-		Handler: p.reverseProxy,
+		Handler: mux,
 	}
 
 	p.running = true
@@ -168,6 +199,7 @@ func (p *Proxy) Start() error {
 		addr,
 		p.backend.String(),
 	)
+	log.Printf("INFO: Template injection enabled for /v1/chat/completions")
 
 	// Start the server in a goroutine so we can handle shutdown gracefully
 	go func() {
@@ -209,4 +241,185 @@ func (p *Proxy) IsRunning() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.running
+}
+
+// ChatMessage represents a single message in the OpenAI chat completion format.
+// This is used for both parsing incoming requests and modifying them for template injection.
+type ChatMessage struct {
+	Role    string `json:"role"`    // "system", "user", or "assistant"
+	Content string `json:"content"` // The message text
+}
+
+// ChatCompletionRequest represents the OpenAI chat completion API request format.
+// We only define the fields we need to inspect/modify, allowing other fields
+// to pass through unchanged via json.RawMessage.
+type ChatCompletionRequest struct {
+	Messages []ChatMessage `json:"messages"` // Array of conversation messages
+	// All other fields (model, temperature, stream, etc.) are preserved as-is
+}
+
+// handleChatCompletion is a custom handler for /v1/chat/completions that performs
+// template injection when a user message starts with a configured prefix.
+//
+// Flow:
+//  1. Read and parse the incoming request body as JSON
+//  2. Find the last user message in the messages array
+//  3. Check if it starts with a configured template prefix (e.g., "@code ")
+//  4. If yes:
+//     - Extract message without prefix
+//     - Process template using watcher.ProcessTemplate()
+//     - Replace message content with processed template
+//  5. Marshal the (possibly modified) request back to JSON
+//  6. Forward to llama.cpp backend
+//  7. Stream response back to client (preserving SSE streaming)
+//
+// Template injection only affects request; responses stream through unchanged.
+func (p *Proxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
+	// Read the entire request body
+	// This is safe because chat completion requests are typically small (< 100KB)
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("ERROR: Failed to read request body: %v", err)
+		http.Error(w, "Failed to read request", http.StatusBadRequest)
+		return
+	}
+	r.Body.Close()
+
+	// Parse the chat completion request
+	var chatReq ChatCompletionRequest
+	if err := json.Unmarshal(bodyBytes, &chatReq); err != nil {
+		log.Printf("ERROR: Failed to parse chat completion request: %v", err)
+		http.Error(w, "Invalid request format", http.StatusBadRequest)
+		return
+	}
+
+	// Find the last user message for template injection
+	// We check the last one because in multi-turn conversations,
+	// only the most recent user input should trigger template selection
+	lastUserIndex := -1
+	for i := len(chatReq.Messages) - 1; i >= 0; i-- {
+		if chatReq.Messages[i].Role == "user" {
+			lastUserIndex = i
+			break
+		}
+	}
+
+	// If there's a user message, check for template prefix
+	if lastUserIndex >= 0 {
+		userMessage := chatReq.Messages[lastUserIndex].Content
+
+		// Check each configured prefix to see if the message starts with it
+		for prefix := range p.config.Prefixes {
+			// Check if message starts with the prefix followed by a space
+			// Example: "@code how do I..." matches prefix "@code"
+			prefixWithSpace := prefix + " "
+			if strings.HasPrefix(userMessage, prefixWithSpace) {
+				// Extract the actual message without the prefix
+				messageWithoutPrefix := strings.TrimPrefix(userMessage, prefixWithSpace)
+
+				log.Printf("INFO: Detected template prefix %s, processing template", prefix)
+
+				// Process the template with the user's message
+				processedTemplate, err := p.watcher.ProcessTemplate(prefix, messageWithoutPrefix)
+				if err != nil {
+					log.Printf("ERROR: Failed to process template %s: %v", prefix, err)
+					http.Error(w, fmt.Sprintf("Template processing failed: %v", err), http.StatusInternalServerError)
+					return
+				}
+
+				// Replace the message content with the processed template
+				chatReq.Messages[lastUserIndex].Content = processedTemplate
+
+				log.Printf("INFO: Template %s processed successfully (%d bytes)", prefix, len(processedTemplate))
+				break // Only process the first matching prefix
+			}
+		}
+	}
+
+	// Marshal the (possibly modified) request back to JSON
+	modifiedBody, err := json.Marshal(chatReq)
+	if err != nil {
+		log.Printf("ERROR: Failed to marshal modified request: %v", err)
+		http.Error(w, "Failed to prepare request", http.StatusInternalServerError)
+		return
+	}
+
+	// Create a new request to forward to llama.cpp
+	// Clone the original request but with our modified body
+	backendURL := *p.backend
+	backendURL.Path = r.URL.Path
+	backendURL.RawQuery = r.URL.RawQuery
+
+	proxyReq, err := http.NewRequest(r.Method, backendURL.String(), bytes.NewReader(modifiedBody))
+	if err != nil {
+		log.Printf("ERROR: Failed to create backend request: %v", err)
+		http.Error(w, "Failed to forward request", http.StatusInternalServerError)
+		return
+	}
+
+	// Copy headers from original request
+	proxyReq.Header = r.Header.Clone()
+	// Update Content-Length since body might have changed
+	proxyReq.ContentLength = int64(len(modifiedBody))
+
+	log.Printf("INFO: Forwarding chat completion request to %s", backendURL.String())
+
+	// Forward the request to llama.cpp and stream response back
+	// We use the default HTTP client which supports streaming
+	resp, err := http.DefaultClient.Do(proxyReq)
+	if err != nil {
+		log.Printf("ERROR: Backend request failed: %v", err)
+		if p.metrics != nil {
+			p.metrics.RecordRequest(r.URL.Path, http.StatusBadGateway)
+		}
+		http.Error(w, "Backend server unavailable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	log.Printf("INFO: Backend responded with status %d", resp.StatusCode)
+
+	// Record metrics
+	if p.metrics != nil {
+		p.metrics.RecordRequest(r.URL.Path, resp.StatusCode)
+	}
+
+	// Copy response headers to client
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+
+	// Set status code
+	w.WriteHeader(resp.StatusCode)
+
+	// Stream the response body back to the client
+	// This supports both regular responses and Server-Sent Events (SSE) streaming.
+	// For SSE, each chunk is flushed immediately as it arrives from llama.cpp.
+	if flusher, ok := w.(http.Flusher); ok {
+		// ResponseWriter supports flushing - enable streaming
+		buf := make([]byte, 32*1024) // 32KB buffer
+		for {
+			n, err := resp.Body.Read(buf)
+			if n > 0 {
+				if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+					log.Printf("ERROR: Failed to write response: %v", writeErr)
+					return
+				}
+				flusher.Flush() // Immediately send data to client
+			}
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				log.Printf("ERROR: Failed to read backend response: %v", err)
+				return
+			}
+		}
+	} else {
+		// Fallback: copy entire response at once (no streaming)
+		// This should rarely happen as most ResponseWriters support flushing
+		io.Copy(w, resp.Body)
+	}
 }
