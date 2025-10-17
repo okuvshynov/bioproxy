@@ -1,0 +1,12 @@
+{
+  "proxy_host": "localhost",
+  "proxy_port": 8088,
+  "admin_host": "localhost",
+  "admin_port": 8089,
+  "backend_url": "http://localhost:8081",
+  "warmup_check_interval": 30,
+  "prefixes": {
+    "@code": "/path/to/code_template.txt",
+    "@debug": "/path/to/debug_template.txt"
+  }
+}
