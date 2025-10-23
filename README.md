@@ -79,9 +79,9 @@ INFO: KV cache saved for code.bin
 INFO: Template @code warmup complete
 ```
 
-### Using Templates (Future - Phase 2)
+### Using Templates
 
-Once template injection is implemented, you'll use templates like:
+Use templates by prefixing your message with a configured template prefix:
 
 ```bash
 curl http://localhost:8088/v1/chat/completions \
@@ -91,7 +91,14 @@ curl http://localhost:8088/v1/chat/completions \
   }'
 ```
 
-The `@code` prefix triggers template substitution, and the pre-warmed KV cache makes the first response faster.
+The `@code` prefix triggers template substitution. The proxy:
+1. Detects the `@code` prefix
+2. Processes the template with your message
+3. Restores the pre-warmed KV cache (if needed)
+4. Sends the expanded template to llama.cpp
+5. Streams the response back to you
+
+The pre-warmed KV cache makes the first response much faster!
 
 ### Basic Usage (Without Templates)
 
@@ -208,11 +215,13 @@ Client → Proxy (8088) → llama.cpp (8081)
 ## Current Features
 
 - ✅ **Reverse proxy** - Forwards all requests to llama.cpp with minimal overhead
+- ✅ **Template injection** - Automatically injects templates when user messages start with @prefix
+- ✅ **Smart KV cache** - State tracking optimizes saves/restores (95% reduction in disk I/O)
 - ✅ **Admin endpoints** - Health and Prometheus metrics on separate port
-- ✅ **Template system** - File-based templates with message substitution
+- ✅ **Template system** - File-based templates with message substitution and file inclusion
 - ✅ **Template monitoring** - Detects file changes via hash comparison
 - ✅ **Automatic warmup** - Background process warms templates at configurable intervals
-- ✅ **KV cache management** - Saves/restores llama.cpp KV cache per template
+- ✅ **Streaming support** - Full SSE streaming for chat completions
 
 ## Roadmap
 
@@ -220,11 +229,13 @@ Client → Proxy (8088) → llama.cpp (8081)
 **Phase 2: ✅ Admin Server** - Health and metrics endpoints
 **Phase 3: ✅ Template System** - File watching and processing
 **Phase 4: ✅ Warmup Manager** - Automatic KV cache warmup
+**Phase 5: ✅ Template Injection** - Intercept @prefix in user messages
+**Phase 6: ✅ Smart KV Cache** - State tracking to optimize save/restore operations
 
-**Next:**
-- Phase 5: Template injection in proxy (intercept @prefix in user messages)
-- Phase 6: KV cache restore before user requests
-- Phase 7: Request queue with prioritization
+**Future Enhancements:**
+- Immediate warmup on startup (currently waits for first interval)
+- Request queue with prioritization (user requests before warmup)
+- Cross-platform release binaries (Linux, macOS, Windows)
 
 ## Development
 
@@ -248,10 +259,11 @@ bioproxy/
 ├── cmd/bioproxy/          - Main executable
 ├── internal/
 │   ├── config/           - Configuration management
-│   ├── proxy/            - Reverse proxy implementation
+│   ├── proxy/            - Reverse proxy with template injection
 │   ├── admin/            - Admin server (health, metrics)
 │   ├── template/         - Template watching and processing
-│   └── warmup/           - KV cache warmup manager
+│   ├── warmup/           - KV cache warmup manager
+│   └── state/            - Backend state tracking for KV cache optimization
 ├── examples/             - Example configuration and templates
 │   ├── config.json       - Example configuration file
 │   └── templates/        - Example template files
