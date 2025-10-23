@@ -16,11 +16,29 @@ Note: `--slot-save-path` is required for KV cache warmup to work.
 
 ### Installation
 
+**Option 1: Build from source**
+
 ```bash
 git clone https://github.com/okuvshynov/bioproxy
 cd bioproxy
 go build -o bioproxy ./cmd/bioproxy
 ```
+
+**Option 2: Cross-platform builds**
+
+Build binaries for multiple platforms:
+
+```bash
+./build.sh
+```
+
+This creates optimized binaries in the `build/` directory:
+- `bioproxy-darwin-arm64` - Apple Silicon (M1/M2/M3 Macs)
+- `bioproxy-linux-arm64` - Linux ARM64 (aarch64)
+
+Each binary includes a SHA256 checksum file (`.sha256`) for verification.
+
+To add more platforms, edit [build.sh](build.sh) and add calls to `build_platform` with desired `GOOS` and `GOARCH` values.
 
 ### Setup with Templates
 
