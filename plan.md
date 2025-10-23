@@ -154,6 +154,33 @@ Product/feature requirements:
     - All manual tests updated and passing
   - **Lesson learned**: Simple state tracking provides massive optimization with minimal complexity
 
+#### 10. Cross-Platform Build Script (`build.sh`)
+- **Manual Cross-Platform Builds** - Build binaries for darwin/arm64 and linux/arm64
+  - **Goal**: Enable easy creation of portable binaries without requiring users to install Go
+  - **Implementation**:
+    - Created bash script leveraging Go's built-in cross-compilation
+    - Uses `GOOS` and `GOARCH` environment variables
+    - Extracts version from git tags (falls back to "dev")
+    - Generates SHA256 checksums for verification
+  - **Platforms supported**:
+    - darwin/arm64 - Apple Silicon (M1/M2/M3 Macs)
+    - linux/arm64 - Linux ARM64 (aarch64)
+  - **Output structure**:
+    ```
+    build/
+    ├── bioproxy-darwin-arm64
+    ├── bioproxy-darwin-arm64.sha256
+    ├── bioproxy-linux-arm64
+    └── bioproxy-linux-arm64.sha256
+    ```
+  - **Features**:
+    - Colored output for better UX
+    - Extensible `build_platform()` function
+    - Automatic checksum generation
+    - Build directory excluded in .gitignore
+  - **Documentation**: Updated README.md with build instructions
+  - **Lesson learned**: Go's cross-compilation "just works" with zero configuration for pure Go projects
+
 ### 🚧 Next Steps
 
 #### NEXT: Additional Optimizations & Features
@@ -216,39 +243,32 @@ Product/feature requirements:
 
 ## Future Improvements (Backlog)
 
-### Cross-Platform Release Binaries
-**Priority**: Medium - Improves distribution and ease of use
+### Automated GitHub Actions Releases
+**Priority**: Low - Manual builds via `build.sh` work well
 
-**Goal**: Automate building of cross-platform binaries for GitHub releases
+**Status**: Manual cross-platform builds implemented (darwin/arm64, linux/arm64)
 
-**Platforms to support**:
+**Goal**: Automate building and releasing binaries via GitHub Actions
+
+**Additional platforms to support**:
 1. **Linux x86_64** (amd64) - Most common server platform
-2. **Linux ARM64** (aarch64) - Raspberry Pi, cloud ARM instances, Apple Silicon servers
-3. **macOS Apple Silicon** (darwin/arm64) - M1/M2/M3 Macs
-4. **macOS Intel** (darwin/amd64) - Older Macs (optional, but easy to include)
-5. **Windows x86_64** (amd64) - Windows servers/desktops
+2. **macOS Intel** (darwin/amd64) - Older Intel Macs
+3. **Windows x86_64** (amd64) - Windows servers/desktops
 
 **Implementation**:
-- Use GitHub Actions workflow (`.github/workflows/release.yml`)
+- Create GitHub Actions workflow (`.github/workflows/release.yml`)
 - Trigger on git tags (e.g., `v0.1.0`)
-- Use `GOOS` and `GOARCH` environment variables for cross-compilation
-- Example build commands:
-  ```bash
-  GOOS=linux GOARCH=amd64 go build -o bioproxy-linux-amd64
-  GOOS=linux GOARCH=arm64 go build -o bioproxy-linux-arm64
-  GOOS=darwin GOARCH=arm64 go build -o bioproxy-darwin-arm64
-  GOOS=darwin GOARCH=amd64 go build -o bioproxy-darwin-amd64
-  GOOS=windows GOARCH=amd64 go build -o bioproxy-windows-amd64.exe
-  ```
+- Build all platforms using existing build patterns
 - Upload binaries as GitHub Release assets
-- Include checksums (SHA256) for verification
-
-**Reference**: Go's built-in cross-compilation support (no CGo dependencies needed)
+- Auto-generate release notes from commit messages
 
 **Benefits**:
-- Users can download pre-built binaries instead of building from source
-- Easier onboarding for non-Go developers
-- Professional distribution approach
+- Automated releases on version tags
+- Consistent build environment
+- More platform coverage
+- Professional release process
+
+**Note**: Current `build.sh` script can be easily extended to add these platforms locally
 
 ### Logging Migration (Optional)
 Currently using stdlib `log` package with manual "INFO:", "ERROR:" prefixes. Could migrate to `log/slog` for:

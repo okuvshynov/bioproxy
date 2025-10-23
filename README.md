@@ -240,6 +240,7 @@ Client → Proxy (8088) → llama.cpp (8081)
 - ✅ **Template monitoring** - Detects file changes via hash comparison
 - ✅ **Automatic warmup** - Background process warms templates at configurable intervals
 - ✅ **Streaming support** - Full SSE streaming for chat completions
+- ✅ **Cross-platform builds** - Build script for darwin/arm64 and linux/arm64 binaries
 
 ## Roadmap
 
@@ -253,7 +254,8 @@ Client → Proxy (8088) → llama.cpp (8081)
 **Future Enhancements:**
 - Immediate warmup on startup (currently waits for first interval)
 - Request queue with prioritization (user requests before warmup)
-- Cross-platform release binaries (Linux, macOS, Windows)
+- GitHub Actions automated releases (auto-build on tags)
+- Additional platform support (linux/amd64, darwin/amd64, windows/amd64)
 
 ## Development
 
