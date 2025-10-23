@@ -15,6 +15,7 @@ import (
 
 	"github.com/oleksandr/bioproxy/internal/admin"
 	"github.com/oleksandr/bioproxy/internal/config"
+	"github.com/oleksandr/bioproxy/internal/state"
 	"github.com/oleksandr/bioproxy/internal/template"
 )
 
@@ -40,6 +41,10 @@ type Proxy struct {
 	// metrics holds request statistics (can be nil if metrics not enabled)
 	metrics *admin.Metrics
 
+	// backendState tracks the inferred state of the llama.cpp backend
+	// (which template prefix is currently loaded in KV cache)
+	backendState *state.State
+
 	// mu protects concurrent access to the proxy state
 	mu sync.Mutex
 
@@ -54,9 +59,10 @@ type Proxy struct {
 //   - cfg: Proxy configuration including backend URL and template mappings
 //   - watcher: Template watcher for processing template injections (required)
 //   - metrics: Optional metrics collector (pass nil to disable)
+//   - backendState: Shared state tracker for llama.cpp backend (required)
 //
 // Returns an error if the backend URL is invalid.
-func New(cfg *config.Config, watcher *template.Watcher, metrics *admin.Metrics) (*Proxy, error) {
+func New(cfg *config.Config, watcher *template.Watcher, metrics *admin.Metrics, backendState *state.State) (*Proxy, error) {
 	// Parse the backend URL to ensure it's valid
 	backend, err := url.Parse(cfg.BackendURL)
 	if err != nil {
@@ -65,11 +71,12 @@ func New(cfg *config.Config, watcher *template.Watcher, metrics *admin.Metrics) 
 
 	// Create the proxy instance
 	p := &Proxy{
-		config:  cfg,
-		backend: backend,
-		watcher: watcher,
-		metrics: metrics,
-		running: false,
+		config:       cfg,
+		backend:      backend,
+		watcher:      watcher,
+		metrics:      metrics,
+		backendState: backendState,
+		running:      false,
 	}
 
 	// Create the reverse proxy using stdlib's httputil.ReverseProxy.
@@ -314,6 +321,9 @@ func (p *Proxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Track which prefix is used for this request (empty string if none)
+	requestPrefix := ""
+
 	// If there's a user message, check for template prefix
 	if lastUserIndex >= 0 {
 		messageMap := messagesArray[lastUserIndex].(map[string]interface{})
@@ -345,11 +355,38 @@ func (p *Proxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 				// Replace the message content with the processed template
 				messageMap["content"] = processedTemplate
+				requestPrefix = prefix // Track that we're using this prefix
 
 				log.Printf("INFO: Template %s processed successfully (%d bytes)", prefix, len(processedTemplate))
 				break // Only process the first matching prefix
 			}
 		}
+	}
+
+	// BEFORE sending the request to llama.cpp:
+	// Perform KV cache save/restore operations based on state transitions
+
+	// Step 1: Save old KV cache if we're switching away from a different template
+	if p.backendState.ShouldSave(requestPrefix) {
+		oldPrefix := p.backendState.GetLastPrefix()
+		oldFilename := strings.TrimPrefix(oldPrefix, "@") + ".bin"
+		log.Printf("Saving KV cache for %s before switching to %s", oldPrefix, requestPrefix)
+		if err := p.saveKVCache(oldPrefix, oldFilename); err != nil {
+			log.Printf("WARNING: Failed to save KV cache for %s: %v", oldPrefix, err)
+			// Don't fail the request - continue
+		}
+	}
+
+	// Step 2: Restore new KV cache if we're switching to a different template
+	if p.backendState.ShouldRestore(requestPrefix) {
+		cacheFilename := strings.TrimPrefix(requestPrefix, "@") + ".bin"
+		log.Printf("Restoring KV cache for %s", requestPrefix)
+		if err := p.restoreKVCache(requestPrefix, cacheFilename); err != nil {
+			log.Printf("WARNING: Failed to restore KV cache for %s: %v", requestPrefix, err)
+			// Don't fail the request - llama.cpp can handle it without cache
+		}
+	} else if requestPrefix != "" {
+		log.Printf("Skipping KV cache restore for %s (already loaded)", requestPrefix)
 	}
 
 	// Marshal the (possibly modified) request back to JSON
@@ -396,6 +433,11 @@ func (p *Proxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("INFO: Backend responded with status %d", resp.StatusCode)
 
+	// Update state to reflect that this prefix is now loaded
+	// We do this AFTER the request succeeds, but BEFORE streaming the response
+	// We do NOT save the KV cache here - we only save when switching away
+	p.backendState.UpdatePrefix(requestPrefix)
+
 	// Record metrics
 	if p.metrics != nil {
 		p.metrics.RecordRequest(r.URL.Path, resp.StatusCode)
@@ -439,4 +481,80 @@ func (p *Proxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
 		// This should rarely happen as most ResponseWriters support flushing
 		io.Copy(w, resp.Body)
 	}
+}
+
+// restoreKVCache restores KV cache from file via llama.cpp API
+func (p *Proxy) restoreKVCache(prefix, filename string) error {
+	url := fmt.Sprintf("%s/slots/0?action=restore", p.backend.String())
+
+	reqBody := map[string]string{
+		"filename": filename,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body for logging
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("cache file not found (404)")
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	log.Printf("KV cache restored for %s", filename)
+	return nil
+}
+
+// saveKVCache saves KV cache to file via llama.cpp API
+func (p *Proxy) saveKVCache(prefix, filename string) error {
+	url := fmt.Sprintf("%s/slots/0?action=save", p.backend.String())
+
+	reqBody := map[string]string{
+		"filename": filename,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body for logging
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+
+	log.Printf("KV cache saved for %s", filename)
+	return nil
 }

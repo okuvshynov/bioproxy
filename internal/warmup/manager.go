@@ -13,17 +13,19 @@ import (
 
 	"github.com/oleksandr/bioproxy/internal/admin"
 	"github.com/oleksandr/bioproxy/internal/config"
+	"github.com/oleksandr/bioproxy/internal/state"
 	"github.com/oleksandr/bioproxy/internal/template"
 )
 
 // Manager handles automatic warmup of templates by monitoring changes
 // and issuing warmup requests to llama.cpp
 type Manager struct {
-	config     *config.Config
-	watcher    *template.Watcher
-	backendURL string
-	client     *http.Client
-	metrics    *admin.Metrics
+	config       *config.Config
+	watcher      *template.Watcher
+	backendURL   string
+	client       *http.Client
+	metrics      *admin.Metrics
+	backendState *state.State
 
 	mu      sync.Mutex
 	running bool
@@ -32,12 +34,13 @@ type Manager struct {
 }
 
 // New creates a new warmup manager
-func New(cfg *config.Config, watcher *template.Watcher, backendURL string, metrics *admin.Metrics) *Manager {
+func New(cfg *config.Config, watcher *template.Watcher, backendURL string, metrics *admin.Metrics, backendState *state.State) *Manager {
 	return &Manager{
-		config:     cfg,
-		watcher:    watcher,
-		backendURL: strings.TrimSuffix(backendURL, "/"),
-		metrics:    metrics,
+		config:       cfg,
+		watcher:      watcher,
+		backendURL:   strings.TrimSuffix(backendURL, "/"),
+		metrics:      metrics,
+		backendState: backendState,
 		client: &http.Client{
 			Timeout: 60 * time.Second, // Warmup can take a while
 		},
@@ -140,30 +143,45 @@ func (m *Manager) warmupTemplate(prefix string) error {
 	// Get cache filename (remove @ prefix if present)
 	cacheFilename := strings.TrimPrefix(prefix, "@") + ".bin"
 
-	// Step 1: Try to restore existing KV cache (may fail first time)
-	if err := m.restoreKVCache(prefix, cacheFilename); err != nil {
-		// Log but don't fail - this is expected on first warmup
-		log.Printf("INFO: Could not restore KV cache for %s (may be first warmup): %v", prefix, err)
+	// BEFORE sending the warmup request:
+	// Step 1: Save old KV cache if we're switching away from a different template
+	if m.backendState.ShouldSave(prefix) {
+		oldPrefix := m.backendState.GetLastPrefix()
+		oldFilename := strings.TrimPrefix(oldPrefix, "@") + ".bin"
+		log.Printf("Saving KV cache for %s before switching to %s", oldPrefix, prefix)
+		if err := m.saveKVCache(oldPrefix, oldFilename); err != nil {
+			log.Printf("WARNING: Failed to save KV cache for %s: %v", oldPrefix, err)
+			// Don't fail the warmup - continue with the new template
+		}
 	}
 
-	// Step 2: Process template with empty message to get warmup content
+	// Step 2: Restore new KV cache if we're switching to a different template
+	if m.backendState.ShouldRestore(prefix) {
+		log.Printf("Restoring KV cache for %s", prefix)
+		if err := m.restoreKVCache(prefix, cacheFilename); err != nil {
+			// Log but don't fail - this is expected on first warmup
+			log.Printf("INFO: Could not restore KV cache for %s (may be first warmup): %v", prefix, err)
+		}
+	} else {
+		log.Printf("Skipping KV cache restore for %s (already loaded)", prefix)
+	}
+
+	// Step 3: Process template with empty message to get warmup content
 	warmupContent, err := m.watcher.ProcessTemplate(prefix, "")
 	if err != nil {
 		m.metrics.RecordWarmupError(prefix, "template_error")
 		return fmt.Errorf("failed to process template: %w", err)
 	}
 
-	// Step 3: Send warmup request to llama.cpp
+	// Step 4: Send warmup request to llama.cpp
 	if err := m.sendWarmupRequest(prefix, warmupContent); err != nil {
 		m.metrics.RecordWarmupError(prefix, "completion_failed")
 		return fmt.Errorf("warmup request failed: %w", err)
 	}
 
-	// Step 4: Save KV cache
-	if err := m.saveKVCache(prefix, cacheFilename); err != nil {
-		m.metrics.RecordWarmupError(prefix, "save_failed")
-		return fmt.Errorf("failed to save KV cache: %w", err)
-	}
+	// Step 5: Update state to reflect that this template is now loaded
+	// We do NOT save the KV cache here - we only save when switching away
+	m.backendState.UpdatePrefix(prefix)
 
 	// Record successful warmup execution and duration
 	duration := time.Since(startTime).Seconds()

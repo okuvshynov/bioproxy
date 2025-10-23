@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/oleksandr/bioproxy/internal/config"
+	"github.com/oleksandr/bioproxy/internal/state"
 	"github.com/oleksandr/bioproxy/internal/template"
 )
 
@@ -29,12 +30,18 @@ func createTestWatcher() *template.Watcher {
 	return template.NewWatcher()
 }
 
+// createTestState creates a new state instance for testing
+func createTestState() *state.State {
+	return state.New()
+}
+
 // TestNew verifies that creating a new proxy works correctly
 func TestNew(t *testing.T) {
 	cfg := createTestConfig("http://localhost:8081")
 	watcher := createTestWatcher()
+	backendState := createTestState()
 
-	proxy, err := New(cfg, watcher, nil)
+	proxy, err := New(cfg, watcher, nil, backendState)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -76,7 +83,7 @@ func TestNewInvalidBackendURL(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := createTestConfig(tc.backendURL)
 			watcher := createTestWatcher()
-			proxy, err := New(cfg, watcher, nil)
+			proxy, err := New(cfg, watcher, nil, createTestState())
 
 			if err == nil {
 				t.Errorf("Expected error for invalid backend URL %s, got nil", tc.backendURL)
@@ -116,7 +123,7 @@ func TestProxyForwarding(t *testing.T) {
 	// Create proxy pointing to the mock backend
 	cfg := createTestConfig(backend.URL)
 	watcher := createTestWatcher()
-	proxy, err := New(cfg, watcher, nil)
+	proxy, err := New(cfg, watcher, nil, createTestState())
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -177,7 +184,7 @@ func TestProxyForwardingDifferentMethods(t *testing.T) {
 
 			cfg := createTestConfig(backend.URL)
 			watcher := createTestWatcher()
-			proxy, err := New(cfg, watcher, nil)
+			proxy, err := New(cfg, watcher, nil, createTestState())
 			if err != nil {
 				t.Fatalf("Failed to create proxy: %v", err)
 			}
@@ -208,7 +215,7 @@ func TestProxyHeaderForwarding(t *testing.T) {
 
 	cfg := createTestConfig(backend.URL)
 	watcher := createTestWatcher()
-	proxy, err := New(cfg, watcher, nil)
+	proxy, err := New(cfg, watcher, nil, createTestState())
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -240,7 +247,7 @@ func TestProxyBackendError(t *testing.T) {
 	// Create proxy pointing to a non-existent backend
 	cfg := createTestConfig("http://localhost:99999") // Invalid port
 	watcher := createTestWatcher()
-	proxy, err := New(cfg, watcher, nil)
+	proxy, err := New(cfg, watcher, nil, createTestState())
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -273,7 +280,7 @@ func TestStartStop(t *testing.T) {
 	cfg.ProxyPort = 0 // Let OS assign port
 
 	watcher := createTestWatcher()
-	proxy, err := New(cfg, watcher, nil)
+	proxy, err := New(cfg, watcher, nil, createTestState())
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -340,7 +347,7 @@ func TestProxyIntegration(t *testing.T) {
 	cfg.ProxyPort = 0 // Let OS assign port
 
 	watcher := createTestWatcher()
-	proxy, err := New(cfg, watcher, nil)
+	proxy, err := New(cfg, watcher, nil, createTestState())
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -404,7 +411,7 @@ func TestProxyDifferentPaths(t *testing.T) {
 
 			cfg := createTestConfig(backend.URL)
 			watcher := createTestWatcher()
-			proxy, err := New(cfg, watcher, nil)
+			proxy, err := New(cfg, watcher, nil, createTestState())
 			if err != nil {
 				t.Fatalf("Failed to create proxy: %v", err)
 			}
@@ -456,7 +463,7 @@ func TestTemplateInjection(t *testing.T) {
 	// Create proxy with the watcher
 	cfg := createTestConfig(backend.URL)
 	cfg.Prefixes = map[string]string{"@test": templateFile}
-	proxy, err := New(cfg, watcher, nil)
+	proxy, err := New(cfg, watcher, nil, createTestState())
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -500,7 +507,7 @@ func TestTemplateInjectionNoPrefix(t *testing.T) {
 	// Create proxy with empty watcher (no templates)
 	cfg := createTestConfig(backend.URL)
 	watcher := template.NewWatcher()
-	proxy, err := New(cfg, watcher, nil)
+	proxy, err := New(cfg, watcher, nil, createTestState())
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -553,7 +560,7 @@ func TestTemplateInjectionMultiTurn(t *testing.T) {
 	// Create proxy
 	cfg := createTestConfig(backend.URL)
 	cfg.Prefixes = map[string]string{"@test": templateFile}
-	proxy, err := New(cfg, watcher, nil)
+	proxy, err := New(cfg, watcher, nil, createTestState())
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -593,7 +600,7 @@ func TestTemplateInjectionInvalidJSON(t *testing.T) {
 
 	cfg := createTestConfig(backend.URL)
 	watcher := template.NewWatcher()
-	proxy, err := New(cfg, watcher, nil)
+	proxy, err := New(cfg, watcher, nil, createTestState())
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}

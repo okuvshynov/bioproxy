@@ -24,6 +24,7 @@ import (
 
 	"github.com/oleksandr/bioproxy/internal/admin"
 	"github.com/oleksandr/bioproxy/internal/config"
+	"github.com/oleksandr/bioproxy/internal/state"
 	"github.com/oleksandr/bioproxy/internal/template"
 )
 
@@ -91,7 +92,7 @@ User question: <{message}>`
 	metrics := admin.NewMetrics()
 
 	// Create and start warmup manager
-	mgr := New(cfg, watcher, llamaCppURL, metrics)
+	mgr := New(cfg, watcher, llamaCppURL, metrics, state.New())
 
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("Failed to start warmup manager: %v", err)
@@ -157,7 +158,7 @@ func TestManualWarmupTemplateChange(t *testing.T) {
 	}
 
 	metrics := admin.NewMetrics()
-	mgr := New(cfg, watcher, llamaCppURL, metrics)
+	mgr := New(cfg, watcher, llamaCppURL, metrics, state.New())
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("Failed to start warmup manager: %v", err)
 	}
@@ -260,7 +261,7 @@ func TestManualWarmupMultipleTemplates(t *testing.T) {
 	t.Logf("✓ Added %d templates to watcher", len(templates))
 
 	metrics := admin.NewMetrics()
-	mgr := New(cfg, watcher, llamaCppURL, metrics)
+	mgr := New(cfg, watcher, llamaCppURL, metrics, state.New())
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("Failed to start warmup manager: %v", err)
 	}
@@ -326,7 +327,7 @@ func TestManualWarmupManagerLifecycle(t *testing.T) {
 
 	watcher := template.NewWatcher()
 	metrics := admin.NewMetrics()
-	mgr := New(cfg, watcher, llamaCppURL, metrics)
+	mgr := New(cfg, watcher, llamaCppURL, metrics, state.New())
 
 	// Test Start
 	if err := mgr.Start(); err != nil {
@@ -397,7 +398,7 @@ Assistant:`
 	}
 
 	metrics := admin.NewMetrics()
-	mgr := New(cfg, watcher, llamaCppURL, metrics)
+	mgr := New(cfg, watcher, llamaCppURL, metrics, state.New())
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("Failed to start warmup manager: %v", err)
 	}
@@ -451,7 +452,7 @@ func TestManualDirectKVCacheOperations(t *testing.T) {
 
 	watcher := template.NewWatcher()
 	metrics := admin.NewMetrics()
-	mgr := New(cfg, watcher, llamaCppURL, metrics)
+	mgr := New(cfg, watcher, llamaCppURL, metrics, state.New())
 
 	testPrefix := "@manual_test"
 	testFilename := "manual_test_cache.bin"

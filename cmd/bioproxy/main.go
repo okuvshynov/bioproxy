@@ -11,6 +11,7 @@ import (
 	"github.com/oleksandr/bioproxy/internal/admin"
 	"github.com/oleksandr/bioproxy/internal/config"
 	"github.com/oleksandr/bioproxy/internal/proxy"
+	"github.com/oleksandr/bioproxy/internal/state"
 	"github.com/oleksandr/bioproxy/internal/template"
 	"github.com/oleksandr/bioproxy/internal/warmup"
 )
@@ -81,13 +82,18 @@ func main() {
 	// Both proxy, admin server, and warmup manager will use this
 	metrics := admin.NewMetrics()
 
-	// Create warmup manager with metrics
+	// Create shared state instance for tracking llama.cpp backend state
+	// Both proxy and warmup manager will update this to track which template
+	// is currently loaded in the KV cache, allowing us to optimize save/restore
+	backendState := state.New()
+
+	// Create warmup manager with metrics and state
 	log.Println("INFO: Creating warmup manager...")
-	warmupMgr := warmup.New(cfg, watcher, cfg.BackendURL, metrics)
+	warmupMgr := warmup.New(cfg, watcher, cfg.BackendURL, metrics, backendState)
 
 	// Create the proxy with template injection support
 	log.Println("INFO: Creating proxy server...")
-	p, err := proxy.New(cfg, watcher, metrics)
+	p, err := proxy.New(cfg, watcher, metrics, backendState)
 	if err != nil {
 		log.Fatalf("FATAL: Failed to create proxy: %v", err)
 	}
