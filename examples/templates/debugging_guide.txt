@@ -1,0 +1,6 @@
+Follow common debugging steps:
+1. Reproduce the issue consistently
+2. Isolate the problem area
+3. Check error messages and logs
+4. Verify input data and assumptions
+5. Test fixes incrementally

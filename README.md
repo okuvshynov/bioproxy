@@ -24,63 +24,28 @@ go build -o bioproxy ./cmd/bioproxy
 
 ### Setup with Templates
 
-**1. Create template files:**
+**1. Use the example configuration:**
+
+The repository includes example configuration and templates in the `examples/` directory:
 
 ```bash
-mkdir -p templates
+# Copy example config to use as a starting point
+cp examples/config.json config.json
+
+# Or use it directly
+./bioproxy -config examples/config.json
 ```
 
-Create `templates/code_assistant.txt`:
-```
-You are an expert coding assistant. You provide clear, working code examples.
-Always explain your reasoning and include error handling.
+The example includes:
+- `examples/config.json` - Full configuration with template mappings
+- `examples/templates/code_assistant.txt` - Coding assistant template
+- `examples/templates/debug_helper.txt` - Debugging helper with file inclusion
+- `examples/templates/debugging_guide.txt` - Included debugging reference
 
-User question: <{message}>
-```
-
-Create `templates/debug_helper.txt`:
-```
-You are a debugging expert. Analyze code issues systematically.
-
-Reference documentation: <{templates/debugging_guide.txt}>
-
-Problem: <{message}>
-
-Analysis:
-```
-
-Create `templates/debugging_guide.txt`:
-```
-Common debugging steps:
-1. Reproduce the issue consistently
-2. Isolate the problem area
-3. Check error messages and logs
-4. Verify input data and assumptions
-5. Test fixes incrementally
-```
-
-**2. Create configuration file:**
-
-Create `config.json`:
-```json
-{
-  "proxy_host": "localhost",
-  "proxy_port": 8088,
-  "admin_host": "localhost",
-  "admin_port": 8089,
-  "backend_url": "http://localhost:8081",
-  "warmup_check_interval": 30,
-  "prefixes": {
-    "@code": "templates/code_assistant.txt",
-    "@debug": "templates/debug_helper.txt"
-  }
-}
-```
-
-**3. Run bioproxy:**
+**2. Run bioproxy:**
 
 ```bash
-./bioproxy -config config.json
+./bioproxy -config examples/config.json
 ```
 
 You should see:
@@ -95,8 +60,8 @@ Configuration:
   Templates:          2 configured
 
 INFO: Creating template watcher...
-INFO: Added template @code from templates/code_assistant.txt (needs warmup)
-INFO: Added template @debug from templates/debug_helper.txt (needs warmup)
+INFO: Added template @code from examples/templates/code_assistant.txt (needs warmup)
+INFO: Added template @debug from examples/templates/debug_helper.txt (needs warmup)
 INFO: Starting warmup manager...
 INFO: Warmup manager background loop started
 
@@ -174,7 +139,7 @@ Example:
 
 ## Configuration Reference
 
-See `config.example.json` for a complete example.
+See [examples/config.json](examples/config.json) for a complete example.
 
 **Required fields:**
 - `backend_url` - llama.cpp server URL
@@ -189,7 +154,7 @@ See `config.example.json` for a complete example.
 
 ## Template Syntax
 
-Templates use `<{...}>` placeholders:
+Templates use `<{...}>` placeholders. See `examples/templates/` for working examples.
 
 **Message placeholder:**
 ```
@@ -198,13 +163,15 @@ System prompt here.
 User: <{message}>
 Assistant:
 ```
+Example: See [examples/templates/code_assistant.txt](examples/templates/code_assistant.txt)
 
 **File inclusion:**
 ```
-Reference documentation: <{templates/debugging_guide.txt}>
+Reference documentation: <{examples/templates/debugging_guide.txt}>
 
 Problem: <{message}>
 ```
+Example: See [examples/templates/debug_helper.txt](examples/templates/debug_helper.txt)
 
 When processed, the file content replaces the placeholder:
 ```
@@ -285,9 +252,11 @@ bioproxy/
 │   ├── admin/            - Admin server (health, metrics)
 │   ├── template/         - Template watching and processing
 │   └── warmup/           - KV cache warmup manager
+├── examples/             - Example configuration and templates
+│   ├── config.json       - Example configuration file
+│   └── templates/        - Example template files
 ├── WARMUP_DESIGN.md      - Warmup architecture design
-├── MANUAL_TESTING.md     - Manual testing guide
-└── config.example.json   - Example configuration
+└── MANUAL_TESTING.md     - Manual testing guide
 ```
 
 ### Documentation

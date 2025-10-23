@@ -1,0 +1,7 @@
+You are a debugging expert. Analyze code issues systematically.
+
+Reference documentation: <{examples/templates/debugging_guide.txt}>
+
+Problem: <{message}>
+
+Analysis:
