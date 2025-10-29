@@ -88,6 +88,12 @@ func (m *Manager) checkLoop() {
 
 	log.Printf("Warmup manager background loop started")
 
+	// Perform immediate warmup check on startup
+	// This ensures templates are warmed up right away instead of waiting
+	// for the first interval (which could be 30+ seconds)
+	log.Printf("Performing initial warmup check...")
+	m.checkAndWarmup()
+
 	// Create ticker for periodic checks
 	ticker := time.NewTicker(time.Duration(m.config.WarmupCheckInterval) * time.Second)
 	defer ticker.Stop()

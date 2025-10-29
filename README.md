@@ -86,16 +86,18 @@ INFO: Warmup manager background loop started
 ✅ Servers are running!
 ```
 
-Within 30 seconds, you'll see the warmup process:
+Immediately after startup, you'll see the warmup process:
 ```
+INFO: Performing initial warmup check...
 INFO: Checking templates for changes...
 INFO: Found 2 template(s) that need warmup: [@code @debug]
 INFO: Starting warmup for @code
 INFO: Sending warmup request for @code
 INFO: Warmup request completed for @code (1.2s)
-INFO: KV cache saved for code.bin
 INFO: Template @code warmup complete
 ```
+
+Templates are now ready to use! The warmup happens immediately on startup instead of waiting for the first interval.
 
 ### Using Templates
 
@@ -235,6 +237,7 @@ Client → Proxy (8088) → llama.cpp (8081)
 - ✅ **Reverse proxy** - Forwards all requests to llama.cpp with minimal overhead
 - ✅ **Template injection** - Automatically injects templates when user messages start with @prefix
 - ✅ **Smart KV cache** - State tracking optimizes saves/restores (95% reduction in disk I/O)
+- ✅ **Immediate warmup** - Templates warm up on startup, no waiting for first interval
 - ✅ **Admin endpoints** - Health and Prometheus metrics on separate port
 - ✅ **Template system** - File-based templates with message substitution and file inclusion
 - ✅ **Template monitoring** - Detects file changes via hash comparison
@@ -252,7 +255,6 @@ Client → Proxy (8088) → llama.cpp (8081)
 **Phase 6: ✅ Smart KV Cache** - State tracking to optimize save/restore operations
 
 **Future Enhancements:**
-- Immediate warmup on startup (currently waits for first interval)
 - Request queue with prioritization (user requests before warmup)
 - GitHub Actions automated releases (auto-build on tags)
 - Additional platform support (linux/amd64, darwin/amd64, windows/amd64)

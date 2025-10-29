@@ -213,6 +213,64 @@ func TestManagerLifecycle(t *testing.T) {
 	mgr.mu.Unlock()
 }
 
+func TestImmediateWarmupOnStartup(t *testing.T) {
+	// This test verifies that warmup happens immediately on startup
+	// instead of waiting for the first interval
+	tmpDir := t.TempDir()
+	templatePath := filepath.Join(tmpDir, "test_template.txt")
+	templateContent := "You are a helpful assistant. <{message}>"
+	if err := os.WriteFile(templatePath, []byte(templateContent), 0644); err != nil {
+		t.Fatalf("Failed to create template file: %v", err)
+	}
+
+	// Create mock server
+	mock := newMockLlamaCppServer()
+	defer mock.Close()
+
+	// Create config with a long interval (we should NOT wait this long)
+	cfg := &config.Config{
+		BackendURL:          mock.URL(),
+		WarmupCheckInterval: 60, // 60 seconds - should not wait this long
+	}
+
+	// Create watcher and add template
+	watcher := template.NewWatcher()
+	if err := watcher.AddTemplate("@test", templatePath); err != nil {
+		t.Fatalf("Failed to add template: %v", err)
+	}
+
+	// Create metrics
+	metrics := admin.NewMetrics()
+
+	// Create manager
+	mgr := New(cfg, watcher, mock.URL(), metrics, state.New())
+
+	// Start manager
+	if err := mgr.Start(); err != nil {
+		t.Fatalf("Failed to start manager: %v", err)
+	}
+	defer mgr.Stop()
+
+	// Wait a short time for the immediate warmup to complete
+	// Should be much less than the 60 second interval
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify warmup happened immediately
+	completionCalls := mock.GetCompletionCalls()
+	if completionCalls != 1 {
+		t.Errorf("Expected immediate warmup (1 completion call), got %d", completionCalls)
+	}
+
+	// Verify restore was attempted
+	restoreCalls := mock.GetRestoreCalls()
+	if len(restoreCalls) != 1 {
+		t.Errorf("Expected 1 restore call during immediate warmup, got %d", len(restoreCalls))
+	}
+
+	// The immediate warmup is the key feature we're testing
+	// The completion call happening immediately (not after 60 seconds) proves it works
+}
+
 func TestWarmupTemplate(t *testing.T) {
 	// Create temporary template file
 	tmpDir := t.TempDir()

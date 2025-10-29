@@ -181,21 +181,33 @@ Product/feature requirements:
   - **Documentation**: Updated README.md with build instructions
   - **Lesson learned**: Go's cross-compilation "just works" with zero configuration for pure Go projects
 
+#### 11. Immediate Warmup on Startup (`internal/warmup/`)
+- **Immediate Template Warmup** - Templates warm up on startup instead of waiting
+  - **Problem**: Templates had to wait for first `WarmupCheckInterval` (default 30s) before warmup
+  - **Solution**: Call `checkAndWarmup()` immediately before entering ticker loop
+  - **Implementation**:
+    - Modified `checkLoop()` in [internal/warmup/manager.go](internal/warmup/manager.go#L86-L109)
+    - Added immediate warmup call right after "background loop started" message
+    - Then proceeds to ticker-based periodic checks as before
+  - **Benefits**:
+    - Templates are ready to use immediately after proxy starts
+    - No 30-second wait for first warmup cycle
+    - Better user experience - faster time-to-ready
+  - **Testing**:
+    - Added `TestImmediateWarmupOnStartup` with 60s interval to verify no wait
+    - All 10 unit tests pass
+    - All 7 manual tests pass with real llama.cpp
+  - **Documentation**: Updated README.md to reflect immediate warmup
+  - **Lesson learned**: Simple optimization with big UX impact - 3 lines of code eliminate startup delay
+
 ### 🚧 Next Steps
 
-#### NEXT: Additional Optimizations & Features
-**Priority**: Medium - Current implementation is functional and optimized
+#### NEXT: Additional Features
+**Priority**: Low - Current implementation is fully functional and optimized
 
-**Potential improvements**:
+**Potential future enhancements**:
 
-1. **Immediate warmup on startup** (Currently: waits for first interval)
-   - **Problem**: Templates wait for `WarmupCheckInterval` (default 30s) before first warmup
-   - **Solution**: Trigger initial warmup check immediately after startup
-   - **Location**: `internal/warmup/manager.go` - modify `Start()` to check templates before entering loop
-   - **Benefit**: Faster time-to-ready for templates on proxy startup
-   - **Note**: Minor UX improvement, not critical
-
-2. **Request Queue & Prioritization** (Longer term)
+1. **Request Queue & Prioritization** (Longer term)
    - **Status**: Not yet designed in detail
    - **Current Situation**:
      - Proxy forwards all user requests immediately to llama.cpp
