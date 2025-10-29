@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/oleksandr/bioproxy/internal/admission"
 	"github.com/oleksandr/bioproxy/internal/admin"
 	"github.com/oleksandr/bioproxy/internal/config"
 	"github.com/oleksandr/bioproxy/internal/proxy"
@@ -87,15 +88,20 @@ func main() {
 	// is currently loaded in the KV cache, allowing us to optimize save/restore
 	backendState := state.New()
 
-	// Create warmup manager with metrics and state
-	log.Println("INFO: Creating warmup manager...")
-	warmupMgr := warmup.New(cfg, watcher, cfg.BackendURL, metrics, backendState)
+	// Create shared admission controller for atomic state transitions
+	// This prevents race conditions between user requests and warmup operations
+	// Both proxy and warmup manager use this to coordinate access to llama.cpp
+	log.Println("INFO: Creating admission controller...")
+	admissionCtrl := admission.New()
 
-	// Create the proxy with template injection support and warmup manager
-	// The warmup manager is passed to allow the proxy to cancel warmup operations
-	// when user requests arrive
+	// Create warmup manager with metrics, state, and admission controller
+	log.Println("INFO: Creating warmup manager...")
+	warmupMgr := warmup.New(cfg, watcher, cfg.BackendURL, metrics, backendState, admissionCtrl)
+
+	// Create the proxy with template injection support, warmup manager, and admission controller
+	// The admission controller ensures atomic state transitions to prevent race conditions
 	log.Println("INFO: Creating proxy server...")
-	p, err := proxy.New(cfg, watcher, metrics, backendState, warmupMgr)
+	p, err := proxy.New(cfg, watcher, metrics, backendState, admissionCtrl)
 	if err != nil {
 		log.Fatalf("FATAL: Failed to create proxy: %v", err)
 	}

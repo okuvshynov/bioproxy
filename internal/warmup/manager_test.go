@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/oleksandr/bioproxy/internal/admission"
 	"github.com/oleksandr/bioproxy/internal/admin"
 	"github.com/oleksandr/bioproxy/internal/config"
 	"github.com/oleksandr/bioproxy/internal/state"
@@ -191,7 +192,7 @@ func TestManagerLifecycle(t *testing.T) {
 	metrics := admin.NewMetrics()
 
 	// Create manager
-	mgr := New(cfg, watcher, mock.URL(), metrics, state.New())
+	mgr := New(cfg, watcher, mock.URL(), metrics, state.New(), admission.New())
 
 	// Test Start
 	if err := mgr.Start(); err != nil {
@@ -251,7 +252,7 @@ func TestImmediateWarmupOnStartup(t *testing.T) {
 	metrics := admin.NewMetrics()
 
 	// Create manager
-	mgr := New(cfg, watcher, mock.URL(), metrics, state.New())
+	mgr := New(cfg, watcher, mock.URL(), metrics, state.New(), admission.New())
 
 	// Start manager
 	if err := mgr.Start(); err != nil {
@@ -313,7 +314,7 @@ func TestWarmupTemplate(t *testing.T) {
 	metrics := admin.NewMetrics()
 
 	// Create manager
-	mgr := New(cfg, watcher, mock.URL(), metrics, state.New())
+	mgr := New(cfg, watcher, mock.URL(), metrics, state.New(), admission.New())
 
 	// Execute warmup
 	if err := mgr.warmupTemplate("@test"); err != nil {
@@ -379,7 +380,7 @@ func TestWarmupWithExistingCache(t *testing.T) {
 	metrics := admin.NewMetrics()
 
 	// Create manager
-	mgr := New(cfg, watcher, mock.URL(), metrics, state.New())
+	mgr := New(cfg, watcher, mock.URL(), metrics, state.New(), admission.New())
 
 	// Execute warmup
 	if err := mgr.warmupTemplate("@test"); err != nil {
@@ -434,7 +435,7 @@ func TestWarmupCompletionFailure(t *testing.T) {
 	metrics := admin.NewMetrics()
 
 	// Create manager
-	mgr := New(cfg, watcher, mock.URL(), metrics, state.New())
+	mgr := New(cfg, watcher, mock.URL(), metrics, state.New(), admission.New())
 
 	// Execute warmup - should fail
 	if err := mgr.warmupTemplate("@test"); err == nil {
@@ -490,9 +491,10 @@ func TestWarmupSaveFailure(t *testing.T) {
 	// Create metrics and state
 	metrics := admin.NewMetrics()
 	backendState := state.New()
+	admissionCtrl := admission.New()
 
 	// Create manager
-	mgr := New(cfg, watcher, mock.URL(), metrics, backendState)
+	mgr := New(cfg, watcher, mock.URL(), metrics, backendState, admissionCtrl)
 
 	// First warmup with test1
 	if err := mgr.warmupTemplate("@test1"); err != nil {
@@ -543,7 +545,7 @@ func TestCheckAndWarmup(t *testing.T) {
 	metrics := admin.NewMetrics()
 
 	// Create manager
-	mgr := New(cfg, watcher, mock.URL(), metrics, state.New())
+	mgr := New(cfg, watcher, mock.URL(), metrics, state.New(), admission.New())
 
 	// Check and warmup (should warmup initial template)
 	mgr.checkAndWarmup()
@@ -590,7 +592,7 @@ func TestRestoreKVCache(t *testing.T) {
 
 	watcher := template.NewWatcher()
 	metrics := admin.NewMetrics()
-	mgr := New(cfg, watcher, mock.URL(), metrics, state.New())
+	mgr := New(cfg, watcher, mock.URL(), metrics, state.New(), admission.New())
 
 	// Test successful restore
 	if err := mgr.restoreKVCache("@test", "test.bin"); err != nil {
@@ -620,7 +622,7 @@ func TestSaveKVCache(t *testing.T) {
 
 	watcher := template.NewWatcher()
 	metrics := admin.NewMetrics()
-	mgr := New(cfg, watcher, mock.URL(), metrics, state.New())
+	mgr := New(cfg, watcher, mock.URL(), metrics, state.New(), admission.New())
 
 	// Test successful save
 	if err := mgr.saveKVCache("@test", "test.bin"); err != nil {
@@ -648,7 +650,7 @@ func TestSendWarmupRequest(t *testing.T) {
 
 	watcher := template.NewWatcher()
 	metrics := admin.NewMetrics()
-	mgr := New(cfg, watcher, mock.URL(), metrics, state.New())
+	mgr := New(cfg, watcher, mock.URL(), metrics, state.New(), admission.New())
 
 	// Test successful request
 	content := "Test warmup content"
@@ -668,116 +670,5 @@ func TestSendWarmupRequest(t *testing.T) {
 
 	if err := mgr.sendWarmupRequest(context.Background(), "@test", content); err == nil {
 		t.Error("Expected error when completion fails")
-	}
-}
-func TestWarmupCancellation(t *testing.T) {
-	// This test verifies that warmup operations can be cancelled when
-	// a user request arrives
-	tmpDir := t.TempDir()
-	templatePath := filepath.Join(tmpDir, "test_template.txt")
-	templateContent := "You are a helpful assistant. <{message}>"
-	if err := os.WriteFile(templatePath, []byte(templateContent), 0644); err != nil {
-		t.Fatalf("Failed to create template file: %v", err)
-	}
-
-	// Create mock server with slow responses to give us time to cancel
-	mock := newMockLlamaCppServer()
-	defer mock.Close()
-
-	// Make the completion request slow so we can cancel it
-	mock.mu.Lock()
-	mock.completionDelay = 500 * time.Millisecond // 500ms delay
-	mock.mu.Unlock()
-
-	// Create config
-	cfg := &config.Config{
-		BackendURL:          mock.URL(),
-		WarmupCheckInterval: 60, // Long interval, we'll trigger manually
-	}
-
-	// Create watcher and add template
-	watcher := template.NewWatcher()
-	if err := watcher.AddTemplate("@test", templatePath); err != nil {
-		t.Fatalf("Failed to add template: %v", err)
-	}
-
-	// Create metrics
-	metrics := admin.NewMetrics()
-
-	// Create manager
-	mgr := New(cfg, watcher, mock.URL(), metrics, state.New())
-
-	// Start warmup in background goroutine
-	done := make(chan error, 1)
-	go func() {
-		err := mgr.warmupTemplate("@test")
-		done <- err
-	}()
-
-	// Wait a bit for warmup to start
-	time.Sleep(50 * time.Millisecond)
-
-	// Verify warmup is in progress
-	if !mgr.IsWarmupInProgress() {
-		t.Error("Expected warmup to be in progress")
-	}
-
-	if mgr.GetWarmupPrefix() != "@test" {
-		t.Errorf("Expected warmup prefix @test, got %s", mgr.GetWarmupPrefix())
-	}
-
-	// Cancel the warmup
-	if !mgr.CancelWarmup() {
-		t.Error("Expected CancelWarmup to return true")
-	}
-
-	// Wait for warmup to complete (should be cancelled)
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Error("Expected error from cancelled warmup")
-		}
-		if err.Error() != "warmup cancelled" {
-			t.Errorf("Expected 'warmup cancelled' error, got: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Warmup did not complete after cancellation")
-	}
-
-	// Verify warmup is no longer in progress
-	if mgr.IsWarmupInProgress() {
-		t.Error("Expected warmup to not be in progress after cancellation")
-	}
-
-	// Verify cancellation metric was recorded
-	// Wait a bit for metric to be recorded
-	time.Sleep(10 * time.Millisecond)
-
-	cancellations := metrics.WarmupCancellations["@test"]
-	if cancellations != 1 {
-		t.Errorf("Expected 1 cancellation, got %d", cancellations)
-	}
-}
-
-func TestCancelWarmupWhenNotRunning(t *testing.T) {
-	// Test that cancelling when no warmup is running returns false
-	cfg := &config.Config{
-		BackendURL:          "http://localhost:8081",
-		WarmupCheckInterval: 60,
-	}
-
-	watcher := template.NewWatcher()
-	metrics := admin.NewMetrics()
-	mgr := New(cfg, watcher, cfg.BackendURL, metrics, state.New())
-
-	// Try to cancel when no warmup is running
-	if mgr.CancelWarmup() {
-		t.Error("Expected CancelWarmup to return false when no warmup is running")
-	}
-
-	// Verify no metrics were recorded
-	totalCancellations := len(metrics.WarmupCancellations)
-	if totalCancellations != 0 {
-		t.Errorf("Expected 0 cancellations, got %d", totalCancellations)
 	}
 }

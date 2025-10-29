@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oleksandr/bioproxy/internal/admission"
 	"github.com/oleksandr/bioproxy/internal/admin"
 	"github.com/oleksandr/bioproxy/internal/config"
 	"github.com/oleksandr/bioproxy/internal/state"
@@ -21,33 +22,29 @@ import (
 // Manager handles automatic warmup of templates by monitoring changes
 // and issuing warmup requests to llama.cpp
 type Manager struct {
-	config       *config.Config
-	watcher      *template.Watcher
-	backendURL   string
-	client       *http.Client
-	metrics      *admin.Metrics
-	backendState *state.State
+	config         *config.Config
+	watcher        *template.Watcher
+	backendURL     string
+	client         *http.Client
+	metrics        *admin.Metrics
+	backendState   *state.State
+	admissionCtrl  *admission.Controller
 
 	mu      sync.Mutex
 	running bool
 	stopCh  chan struct{}
 	doneCh  chan struct{}
-
-	// Warmup cancellation support
-	warmupMu          sync.RWMutex
-	warmupInProgress  bool
-	warmupPrefix      string        // Which prefix is currently warming up
-	warmupCancelFunc  context.CancelFunc // Function to cancel in-progress warmup
 }
 
 // New creates a new warmup manager
-func New(cfg *config.Config, watcher *template.Watcher, backendURL string, metrics *admin.Metrics, backendState *state.State) *Manager {
+func New(cfg *config.Config, watcher *template.Watcher, backendURL string, metrics *admin.Metrics, backendState *state.State, admissionCtrl *admission.Controller) *Manager {
 	return &Manager{
-		config:       cfg,
-		watcher:      watcher,
-		backendURL:   strings.TrimSuffix(backendURL, "/"),
-		metrics:      metrics,
-		backendState: backendState,
+		config:        cfg,
+		watcher:       watcher,
+		backendURL:    strings.TrimSuffix(backendURL, "/"),
+		metrics:       metrics,
+		backendState:  backendState,
+		admissionCtrl: admissionCtrl,
 		client: &http.Client{
 			Timeout: 60 * time.Second, // Warmup can take a while
 		},
@@ -87,44 +84,6 @@ func (m *Manager) Stop() {
 	close(m.stopCh)
 	<-m.doneCh
 	log.Printf("Warmup manager stopped")
-}
-
-// CancelWarmup attempts to cancel an in-progress warmup operation.
-// This is called by the proxy when a user request arrives and needs priority.
-// Returns true if a warmup was cancelled, false if no warmup was in progress.
-func (m *Manager) CancelWarmup() bool {
-	m.warmupMu.Lock()
-	defer m.warmupMu.Unlock()
-
-	if !m.warmupInProgress {
-		return false
-	}
-
-	log.Printf("Cancelling in-progress warmup for %s (user request has priority)", m.warmupPrefix)
-
-	// Call the cancel function to abort the HTTP request
-	if m.warmupCancelFunc != nil {
-		m.warmupCancelFunc()
-	}
-
-	// Record cancellation metric
-	m.metrics.RecordWarmupCancellation(m.warmupPrefix)
-
-	return true
-}
-
-// IsWarmupInProgress returns true if a warmup operation is currently running
-func (m *Manager) IsWarmupInProgress() bool {
-	m.warmupMu.RLock()
-	defer m.warmupMu.RUnlock()
-	return m.warmupInProgress
-}
-
-// GetWarmupPrefix returns the prefix currently being warmed up (or empty if none)
-func (m *Manager) GetWarmupPrefix() string {
-	m.warmupMu.RLock()
-	defer m.warmupMu.RUnlock()
-	return m.warmupPrefix
 }
 
 // checkLoop is the background goroutine that periodically checks for template changes
@@ -173,7 +132,11 @@ func (m *Manager) checkAndWarmup() {
 	// Warmup each changed template
 	for _, prefix := range changedPrefixes {
 		if err := m.warmupTemplate(prefix); err != nil {
-			// Check if error was due to cancellation
+			// Check if warmup was skipped or cancelled
+			if err.Error() == "warmup skipped" {
+				// Skipped because user query is running - will retry next cycle
+				continue
+			}
 			if err.Error() == "warmup cancelled" {
 				log.Printf("Warmup for %s was cancelled (user request had priority)", prefix)
 				// Don't mark as warmed up - will retry on next check cycle
@@ -192,27 +155,20 @@ func (m *Manager) checkAndWarmup() {
 
 // warmupTemplate executes the warmup sequence for a single template
 func (m *Manager) warmupTemplate(prefix string) error {
-	log.Printf("Starting warmup for %s", prefix)
-
 	// Create cancellable context for this warmup
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Track warmup state
-	m.warmupMu.Lock()
-	m.warmupInProgress = true
-	m.warmupPrefix = prefix
-	m.warmupCancelFunc = cancel
-	m.warmupMu.Unlock()
+	// Try to acquire permission to run warmup via admission controller
+	if !m.admissionCtrl.AcquireWarmup(prefix, cancel) {
+		// Skipped - user query is running or already warming
+		return fmt.Errorf("warmup skipped")
+	}
 
-	// Clean up warmup state when done
-	defer func() {
-		m.warmupMu.Lock()
-		m.warmupInProgress = false
-		m.warmupPrefix = ""
-		m.warmupCancelFunc = nil
-		m.warmupMu.Unlock()
-	}()
+	// Release warmup state when done
+	defer m.admissionCtrl.ReleaseWarmup()
+
+	log.Printf("Starting warmup for %s", prefix)
 
 	// Track warmup duration
 	startTime := time.Now()

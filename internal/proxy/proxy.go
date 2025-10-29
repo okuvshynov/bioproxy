@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/oleksandr/bioproxy/internal/admission"
 	"github.com/oleksandr/bioproxy/internal/admin"
 	"github.com/oleksandr/bioproxy/internal/config"
 	"github.com/oleksandr/bioproxy/internal/state"
@@ -45,23 +46,15 @@ type Proxy struct {
 	// (which template prefix is currently loaded in KV cache)
 	backendState *state.State
 
-	// warmupManager allows the proxy to cancel warmup operations when
-	// user requests arrive (can be nil if warmup not enabled)
-	warmupManager WarmupManager
+	// admissionCtrl coordinates access to llama.cpp between user and warmup requests
+	// Ensures atomic state transitions to prevent race conditions
+	admissionCtrl *admission.Controller
 
 	// mu protects concurrent access to the proxy state
 	mu sync.Mutex
 
 	// running indicates whether the proxy is currently running
 	running bool
-}
-
-// WarmupManager interface defines the methods the proxy needs from the warmup manager
-// This allows the proxy to cancel warmup operations when user requests arrive
-type WarmupManager interface {
-	CancelWarmup() bool
-	IsWarmupInProgress() bool
-	GetWarmupPrefix() string
 }
 
 // New creates a new Proxy instance with the given configuration.
@@ -72,10 +65,10 @@ type WarmupManager interface {
 //   - watcher: Template watcher for processing template injections (required)
 //   - metrics: Optional metrics collector (pass nil to disable)
 //   - backendState: Shared state tracker for llama.cpp backend (required)
-//   - warmupMgr: Optional warmup manager for cancelling warmup on user requests (pass nil to disable)
+//   - admissionCtrl: Admission controller for coordinating access to llama.cpp (required)
 //
 // Returns an error if the backend URL is invalid.
-func New(cfg *config.Config, watcher *template.Watcher, metrics *admin.Metrics, backendState *state.State, warmupMgr WarmupManager) (*Proxy, error) {
+func New(cfg *config.Config, watcher *template.Watcher, metrics *admin.Metrics, backendState *state.State, admissionCtrl *admission.Controller) (*Proxy, error) {
 	// Parse the backend URL to ensure it's valid
 	backend, err := url.Parse(cfg.BackendURL)
 	if err != nil {
@@ -89,7 +82,7 @@ func New(cfg *config.Config, watcher *template.Watcher, metrics *admin.Metrics, 
 		watcher:       watcher,
 		metrics:       metrics,
 		backendState:  backendState,
-		warmupManager: warmupMgr,
+		admissionCtrl: admissionCtrl,
 		running:       false,
 	}
 
@@ -285,15 +278,11 @@ func (p *Proxy) IsRunning() bool {
 //
 // Template injection only affects request; responses stream through unchanged.
 func (p *Proxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
-	// PRIORITY HANDLING: User requests take priority over warmup operations
-	// If a warmup is currently in progress, cancel it to ensure the user request
-	// gets processed immediately without waiting
-	if p.warmupManager != nil && p.warmupManager.IsWarmupInProgress() {
-		warmupPrefix := p.warmupManager.GetWarmupPrefix()
-		if p.warmupManager.CancelWarmup() {
-			log.Printf("INFO: Cancelled warmup for %s to prioritize user request", warmupPrefix)
-		}
-	}
+	// ADMISSION CONTROL: Acquire permission to run user query
+	// This atomically transitions state and cancels any warmup if needed
+	// The admission controller ensures no race conditions
+	p.admissionCtrl.AcquireUserQuery()
+	defer p.admissionCtrl.ReleaseUserQuery()
 
 	// Read the entire request body
 	// This is safe because chat completion requests are typically small (< 100KB)

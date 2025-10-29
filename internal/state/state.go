@@ -4,6 +4,32 @@ import (
 	"sync"
 )
 
+// RequestType represents the type of request currently using llama.cpp
+type RequestType int
+
+const (
+	// IDLE means no request is currently in flight
+	IDLE RequestType = iota
+	// USER_QUERY means a user-initiated request is active
+	USER_QUERY
+	// WARMUP_QUERY means a background warmup request is active
+	WARMUP_QUERY
+)
+
+// String returns a human-readable name for the request type
+func (r RequestType) String() string {
+	switch r {
+	case IDLE:
+		return "IDLE"
+	case USER_QUERY:
+		return "USER_QUERY"
+	case WARMUP_QUERY:
+		return "WARMUP_QUERY"
+	default:
+		return "UNKNOWN"
+	}
+}
+
 // State tracks the inferred state of the llama.cpp backend.
 // This allows us to optimize KV cache operations by only saving/loading
 // when we know the state has changed (different template prefix).
