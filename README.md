@@ -145,6 +145,28 @@ curl http://localhost:8088/v1/chat/completions \
 curl http://localhost:8089/metrics
 ```
 
+## Monitoring and Metrics
+
+The admin server (default port 8089) exposes Prometheus metrics:
+
+**Key metrics:**
+- `bioproxy_requests_total{prefix="@code"}` - Total requests per template prefix
+- `bioproxy_warmup_total{prefix="@code"}` - Completed warmup operations
+- `bioproxy_warmup_cancellations_total{prefix="@code"}` - Warmups cancelled by user requests
+- `bioproxy_kv_cache_saves_total{prefix="@code"}` - KV cache save operations
+- `bioproxy_kv_cache_restores_total{prefix="@code"}` - KV cache restore operations
+
+Example output:
+```
+bioproxy_requests_total{prefix="@code"} 42
+bioproxy_warmup_total{prefix="@code"} 5
+bioproxy_warmup_cancellations_total{prefix="@code"} 2
+```
+
+**Request Prioritization:**
+When a user request arrives while a warmup is in progress, the warmup is automatically cancelled to ensure instant response. The `warmup_cancellations_total` metric tracks how often this occurs.
+```
+
 ## Command-Line Options
 
 ```bash
@@ -238,6 +260,8 @@ Client → Proxy (8088) → llama.cpp (8081)
 - ✅ **Template injection** - Automatically injects templates when user messages start with @prefix
 - ✅ **Smart KV cache** - State tracking optimizes saves/restores (95% reduction in disk I/O)
 - ✅ **Immediate warmup** - Templates warm up on startup, no waiting for first interval
+- ✅ **Request prioritization** - User requests automatically cancel warmup operations for instant response
+- ✅ **Atomic admission control** - Race-free state machine ensures correct request coordination
 - ✅ **Admin endpoints** - Health and Prometheus metrics on separate port
 - ✅ **Template system** - File-based templates with message substitution and file inclusion
 - ✅ **Template monitoring** - Detects file changes via hash comparison
@@ -255,9 +279,9 @@ Client → Proxy (8088) → llama.cpp (8081)
 **Phase 6: ✅ Smart KV Cache** - State tracking to optimize save/restore operations
 
 **Future Enhancements:**
-- Request queue with prioritization (user requests before warmup)
 - GitHub Actions automated releases (auto-build on tags)
 - Additional platform support (linux/amd64, darwin/amd64, windows/amd64)
+- Multi-backend load balancing
 
 ## Development
 
