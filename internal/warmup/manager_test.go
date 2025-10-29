@@ -595,7 +595,7 @@ func TestRestoreKVCache(t *testing.T) {
 	mgr := New(cfg, watcher, mock.URL(), metrics, state.New(), admission.New())
 
 	// Test successful restore
-	if err := mgr.restoreKVCache("@test", "test.bin"); err != nil {
+	if err := mgr.kvCache.Restore("@test", "test.bin"); err != nil {
 		t.Errorf("Restore should succeed: %v", err)
 	}
 
@@ -604,7 +604,7 @@ func TestRestoreKVCache(t *testing.T) {
 	mock.restoreFailures["missing.bin"] = true
 	mock.mu.Unlock()
 
-	if err := mgr.restoreKVCache("@test", "missing.bin"); err == nil {
+	if err := mgr.kvCache.Restore("@test", "missing.bin"); err == nil {
 		t.Error("Expected error when cache file not found")
 	} else if !strings.Contains(err.Error(), "404") {
 		t.Errorf("Expected 404 error, got: %v", err)
@@ -625,7 +625,7 @@ func TestSaveKVCache(t *testing.T) {
 	mgr := New(cfg, watcher, mock.URL(), metrics, state.New(), admission.New())
 
 	// Test successful save
-	if err := mgr.saveKVCache("@test", "test.bin"); err != nil {
+	if err := mgr.kvCache.Save("@test", "test.bin"); err != nil {
 		t.Errorf("Save should succeed: %v", err)
 	}
 
@@ -634,7 +634,7 @@ func TestSaveKVCache(t *testing.T) {
 	mock.saveFailures["fail.bin"] = true
 	mock.mu.Unlock()
 
-	if err := mgr.saveKVCache("@test", "fail.bin"); err == nil {
+	if err := mgr.kvCache.Save("@test", "fail.bin"); err == nil {
 		t.Error("Expected error when save fails")
 	}
 }

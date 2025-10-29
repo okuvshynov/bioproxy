@@ -16,6 +16,7 @@ import (
 	"github.com/oleksandr/bioproxy/internal/admission"
 	"github.com/oleksandr/bioproxy/internal/admin"
 	"github.com/oleksandr/bioproxy/internal/config"
+	"github.com/oleksandr/bioproxy/internal/kvcache"
 	"github.com/oleksandr/bioproxy/internal/state"
 	"github.com/oleksandr/bioproxy/internal/template"
 )
@@ -38,6 +39,9 @@ type Proxy struct {
 
 	// watcher monitors templates and processes them for injection
 	watcher *template.Watcher
+
+	// kvCache handles KV cache operations with llama.cpp
+	kvCache *kvcache.Client
 
 	// metrics holds request statistics (can be nil if metrics not enabled)
 	metrics *admin.Metrics
@@ -80,6 +84,7 @@ func New(cfg *config.Config, watcher *template.Watcher, metrics *admin.Metrics, 
 		config:        cfg,
 		backend:       backend,
 		watcher:       watcher,
+		kvCache:       kvcache.New(cfg.BackendURL, http.DefaultClient, metrics),
 		metrics:       metrics,
 		backendState:  backendState,
 		admissionCtrl: admissionCtrl,
@@ -384,7 +389,7 @@ func (p *Proxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
 		oldPrefix := p.backendState.GetLastPrefix()
 		oldFilename := strings.TrimPrefix(oldPrefix, "@") + ".bin"
 		log.Printf("Saving KV cache for %s before switching to %s", oldPrefix, requestPrefix)
-		if err := p.saveKVCache(oldPrefix, oldFilename); err != nil {
+		if err := p.kvCache.Save(oldPrefix, oldFilename); err != nil {
 			log.Printf("WARNING: Failed to save KV cache for %s: %v", oldPrefix, err)
 			// Don't fail the request - continue
 		}
@@ -394,7 +399,7 @@ func (p *Proxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
 	if p.backendState.ShouldRestore(requestPrefix) {
 		cacheFilename := strings.TrimPrefix(requestPrefix, "@") + ".bin"
 		log.Printf("Restoring KV cache for %s", requestPrefix)
-		if err := p.restoreKVCache(requestPrefix, cacheFilename); err != nil {
+		if err := p.kvCache.Restore(requestPrefix, cacheFilename); err != nil {
 			log.Printf("WARNING: Failed to restore KV cache for %s: %v", requestPrefix, err)
 			// Don't fail the request - llama.cpp can handle it without cache
 		}
@@ -494,80 +499,4 @@ func (p *Proxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
 		// This should rarely happen as most ResponseWriters support flushing
 		io.Copy(w, resp.Body)
 	}
-}
-
-// restoreKVCache restores KV cache from file via llama.cpp API
-func (p *Proxy) restoreKVCache(prefix, filename string) error {
-	url := fmt.Sprintf("%s/slots/0?action=restore", p.backend.String())
-
-	reqBody := map[string]string{
-		"filename": filename,
-	}
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response body for logging
-	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("cache file not found (404)")
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
-	}
-
-	log.Printf("KV cache restored for %s", filename)
-	return nil
-}
-
-// saveKVCache saves KV cache to file via llama.cpp API
-func (p *Proxy) saveKVCache(prefix, filename string) error {
-	url := fmt.Sprintf("%s/slots/0?action=save", p.backend.String())
-
-	reqBody := map[string]string{
-		"filename": filename,
-	}
-
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response body for logging
-	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
-	}
-
-	log.Printf("KV cache saved for %s", filename)
-	return nil
 }
