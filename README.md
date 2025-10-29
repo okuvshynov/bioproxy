@@ -294,7 +294,7 @@ go test ./...
 
 **Manual tests (requires llama.cpp with --slot-save-path):**
 ```bash
-# See MANUAL_TESTING.md for complete guide
+# See docs/MANUAL_TESTING.md for complete guide
 go clean -testcache && go test -tags=manual -v ./...
 ```
 
@@ -309,18 +309,20 @@ bioproxy/
 │   ├── admin/            - Admin server (health, metrics)
 │   ├── template/         - Template watching and processing
 │   ├── warmup/           - KV cache warmup manager
-│   └── state/            - Backend state tracking for KV cache optimization
+│   ├── state/            - Backend state tracking for KV cache optimization
+│   └── admission/        - Atomic admission control for request coordination
 ├── examples/             - Example configuration and templates
 │   ├── config.json       - Example configuration file
 │   └── templates/        - Example template files
-├── WARMUP_DESIGN.md      - Warmup architecture design
-└── MANUAL_TESTING.md     - Manual testing guide
+└── docs/                 - Documentation
+    ├── WARMUP_DESIGN.md  - Warmup architecture design
+    └── MANUAL_TESTING.md - Manual testing guide
 ```
 
 ### Documentation
 
-- **WARMUP_DESIGN.md** - Complete warmup architecture and design decisions
-- **MANUAL_TESTING.md** - Guide for running manual tests with llama.cpp
+- **[docs/WARMUP_DESIGN.md](docs/WARMUP_DESIGN.md)** - Complete warmup architecture and design decisions
+- **[docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md)** - Guide for running manual tests with llama.cpp
 - **internal/\*/README.md** - Module-specific documentation
 
 ## License

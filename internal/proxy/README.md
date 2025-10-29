@@ -32,7 +32,7 @@ These tests cover proxy creation, request forwarding, headers, error handling, a
 go clean -testcache && go test -tags=manual -v ./internal/proxy/...
 ```
 
-See [MANUAL_TESTING.md](../../MANUAL_TESTING.md) in the project root for complete guide.
+See [docs/MANUAL_TESTING.md](../../docs/MANUAL_TESTING.md) for complete guide.
 
 ## Usage Example
 

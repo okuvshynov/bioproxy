@@ -40,7 +40,7 @@ go clean -testcache && go test -tags=manual -v ./internal/warmup/...
 
 **Important:** llama.cpp must be started with `--slot-save-path` for these tests.
 
-See [MANUAL_TESTING.md](../../MANUAL_TESTING.md) in the project root for complete guide.
+See [docs/MANUAL_TESTING.md](../../docs/MANUAL_TESTING.md) for complete guide.
 
 ## Usage Example
 
@@ -123,7 +123,7 @@ INFO: Template @code warmup complete
 
 ## Design
 
-See [WARMUP_DESIGN.md](../../WARMUP_DESIGN.md) for complete architecture documentation.
+See [docs/WARMUP_DESIGN.md](../../docs/WARMUP_DESIGN.md) for complete architecture documentation.
 
 ## Test Coverage
 
