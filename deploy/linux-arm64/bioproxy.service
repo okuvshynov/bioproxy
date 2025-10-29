@@ -1,0 +1,18 @@
+[Unit]
+Description=Bioproxy - llama.cpp reverse proxy with KV cache warmup
+After=network.target
+
+[Service]
+Type=simple
+User=%USER%
+WorkingDirectory=/home/%USER%/bio/
+ExecStart=/home/%USER%/bio/bioproxy -config /home/%USER%/.bio/proxy_conf.json
+Restart=always
+RestartSec=5
+
+# Security hardening (optional but recommended)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
