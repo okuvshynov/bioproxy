@@ -91,9 +91,11 @@ func main() {
 	log.Println("INFO: Creating warmup manager...")
 	warmupMgr := warmup.New(cfg, watcher, cfg.BackendURL, metrics, backendState)
 
-	// Create the proxy with template injection support
+	// Create the proxy with template injection support and warmup manager
+	// The warmup manager is passed to allow the proxy to cancel warmup operations
+	// when user requests arrive
 	log.Println("INFO: Creating proxy server...")
-	p, err := proxy.New(cfg, watcher, metrics, backendState)
+	p, err := proxy.New(cfg, watcher, metrics, backendState, warmupMgr)
 	if err != nil {
 		log.Fatalf("FATAL: Failed to create proxy: %v", err)
 	}

@@ -1,6 +1,7 @@
 package warmup
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +29,7 @@ type mockLlamaCppServer struct {
 	restoreFailures   map[string]bool // files that should fail to restore
 	saveFailures      map[string]bool // files that should fail to save
 	completionFailure bool            // whether completion should fail
+	completionDelay   time.Duration   // delay before responding to completion requests
 }
 
 func newMockLlamaCppServer() *mockLlamaCppServer {
@@ -98,13 +100,19 @@ func newMockLlamaCppServer() *mockLlamaCppServer {
 	// Chat completions endpoint
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		mock.mu.Lock()
-		defer mock.mu.Unlock()
-
+		delay := mock.completionDelay
 		mock.completionCalls++
 
 		if mock.completionFailure {
+			mock.mu.Unlock()
 			http.Error(w, "completion failed", http.StatusInternalServerError)
 			return
+		}
+		mock.mu.Unlock()
+
+		// Simulate slow response if delay is set
+		if delay > 0 {
+			time.Sleep(delay)
 		}
 
 		// Return minimal completion response
@@ -644,7 +652,7 @@ func TestSendWarmupRequest(t *testing.T) {
 
 	// Test successful request
 	content := "Test warmup content"
-	if err := mgr.sendWarmupRequest("@test", content); err != nil {
+	if err := mgr.sendWarmupRequest(context.Background(), "@test", content); err != nil {
 		t.Errorf("Warmup request should succeed: %v", err)
 	}
 
@@ -658,7 +666,118 @@ func TestSendWarmupRequest(t *testing.T) {
 	mock.completionFailure = true
 	mock.mu.Unlock()
 
-	if err := mgr.sendWarmupRequest("@test", content); err == nil {
+	if err := mgr.sendWarmupRequest(context.Background(), "@test", content); err == nil {
 		t.Error("Expected error when completion fails")
+	}
+}
+func TestWarmupCancellation(t *testing.T) {
+	// This test verifies that warmup operations can be cancelled when
+	// a user request arrives
+	tmpDir := t.TempDir()
+	templatePath := filepath.Join(tmpDir, "test_template.txt")
+	templateContent := "You are a helpful assistant. <{message}>"
+	if err := os.WriteFile(templatePath, []byte(templateContent), 0644); err != nil {
+		t.Fatalf("Failed to create template file: %v", err)
+	}
+
+	// Create mock server with slow responses to give us time to cancel
+	mock := newMockLlamaCppServer()
+	defer mock.Close()
+
+	// Make the completion request slow so we can cancel it
+	mock.mu.Lock()
+	mock.completionDelay = 500 * time.Millisecond // 500ms delay
+	mock.mu.Unlock()
+
+	// Create config
+	cfg := &config.Config{
+		BackendURL:          mock.URL(),
+		WarmupCheckInterval: 60, // Long interval, we'll trigger manually
+	}
+
+	// Create watcher and add template
+	watcher := template.NewWatcher()
+	if err := watcher.AddTemplate("@test", templatePath); err != nil {
+		t.Fatalf("Failed to add template: %v", err)
+	}
+
+	// Create metrics
+	metrics := admin.NewMetrics()
+
+	// Create manager
+	mgr := New(cfg, watcher, mock.URL(), metrics, state.New())
+
+	// Start warmup in background goroutine
+	done := make(chan error, 1)
+	go func() {
+		err := mgr.warmupTemplate("@test")
+		done <- err
+	}()
+
+	// Wait a bit for warmup to start
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify warmup is in progress
+	if !mgr.IsWarmupInProgress() {
+		t.Error("Expected warmup to be in progress")
+	}
+
+	if mgr.GetWarmupPrefix() != "@test" {
+		t.Errorf("Expected warmup prefix @test, got %s", mgr.GetWarmupPrefix())
+	}
+
+	// Cancel the warmup
+	if !mgr.CancelWarmup() {
+		t.Error("Expected CancelWarmup to return true")
+	}
+
+	// Wait for warmup to complete (should be cancelled)
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("Expected error from cancelled warmup")
+		}
+		if err.Error() != "warmup cancelled" {
+			t.Errorf("Expected 'warmup cancelled' error, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Warmup did not complete after cancellation")
+	}
+
+	// Verify warmup is no longer in progress
+	if mgr.IsWarmupInProgress() {
+		t.Error("Expected warmup to not be in progress after cancellation")
+	}
+
+	// Verify cancellation metric was recorded
+	// Wait a bit for metric to be recorded
+	time.Sleep(10 * time.Millisecond)
+
+	cancellations := metrics.WarmupCancellations["@test"]
+	if cancellations != 1 {
+		t.Errorf("Expected 1 cancellation, got %d", cancellations)
+	}
+}
+
+func TestCancelWarmupWhenNotRunning(t *testing.T) {
+	// Test that cancelling when no warmup is running returns false
+	cfg := &config.Config{
+		BackendURL:          "http://localhost:8081",
+		WarmupCheckInterval: 60,
+	}
+
+	watcher := template.NewWatcher()
+	metrics := admin.NewMetrics()
+	mgr := New(cfg, watcher, cfg.BackendURL, metrics, state.New())
+
+	// Try to cancel when no warmup is running
+	if mgr.CancelWarmup() {
+		t.Error("Expected CancelWarmup to return false when no warmup is running")
+	}
+
+	// Verify no metrics were recorded
+	totalCancellations := len(metrics.WarmupCancellations)
+	if totalCancellations != 0 {
+		t.Errorf("Expected 0 cancellations, got %d", totalCancellations)
 	}
 }

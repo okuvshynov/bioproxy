@@ -70,7 +70,7 @@ func TestManualHealthCheck(t *testing.T) {
 	watcher := template.NewWatcher()
 
 	// Create and start proxy
-	proxy, err := New(cfg, watcher, nil, state.New())
+	proxy, err := New(cfg, watcher, nil, state.New(), nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestManualSlotSave(t *testing.T) {
 	}
 
 	watcher := template.NewWatcher()
-	proxy, err := New(cfg, watcher, nil, state.New())
+	proxy, err := New(cfg, watcher, nil, state.New(), nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestManualSlotRestore(t *testing.T) {
 	}
 
 	watcher := template.NewWatcher()
-	proxy, err := New(cfg, watcher, nil, state.New())
+	proxy, err := New(cfg, watcher, nil, state.New(), nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestManualChatCompletion(t *testing.T) {
 	}
 
 	watcher := template.NewWatcher()
-	proxy, err := New(cfg, watcher, nil, state.New())
+	proxy, err := New(cfg, watcher, nil, state.New(), nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestManualStreamingChat(t *testing.T) {
 	}
 
 	watcher := template.NewWatcher()
-	proxy, err := New(cfg, watcher, nil, state.New())
+	proxy, err := New(cfg, watcher, nil, state.New(), nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -454,7 +454,7 @@ func TestManualProxyPerformance(t *testing.T) {
 	}
 
 	watcher := template.NewWatcher()
-	proxy, err := New(cfg, watcher, nil, state.New())
+	proxy, err := New(cfg, watcher, nil, state.New(), nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -529,7 +529,7 @@ func TestManualTemplateInjection(t *testing.T) {
 		Prefixes:   map[string]string{"@test": templateFile},
 	}
 
-	proxy, err := New(cfg, watcher, nil, state.New())
+	proxy, err := New(cfg, watcher, nil, state.New(), nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}
@@ -644,7 +644,7 @@ func TestManualTemplateInjectionWithStreaming(t *testing.T) {
 		Prefixes:   map[string]string{"@count": templateFile},
 	}
 
-	proxy, err := New(cfg, watcher, nil, state.New())
+	proxy, err := New(cfg, watcher, nil, state.New(), nil)
 	if err != nil {
 		t.Fatalf("Failed to create proxy: %v", err)
 	}

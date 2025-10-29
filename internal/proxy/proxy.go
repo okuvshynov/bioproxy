@@ -45,11 +45,23 @@ type Proxy struct {
 	// (which template prefix is currently loaded in KV cache)
 	backendState *state.State
 
+	// warmupManager allows the proxy to cancel warmup operations when
+	// user requests arrive (can be nil if warmup not enabled)
+	warmupManager WarmupManager
+
 	// mu protects concurrent access to the proxy state
 	mu sync.Mutex
 
 	// running indicates whether the proxy is currently running
 	running bool
+}
+
+// WarmupManager interface defines the methods the proxy needs from the warmup manager
+// This allows the proxy to cancel warmup operations when user requests arrive
+type WarmupManager interface {
+	CancelWarmup() bool
+	IsWarmupInProgress() bool
+	GetWarmupPrefix() string
 }
 
 // New creates a new Proxy instance with the given configuration.
@@ -60,9 +72,10 @@ type Proxy struct {
 //   - watcher: Template watcher for processing template injections (required)
 //   - metrics: Optional metrics collector (pass nil to disable)
 //   - backendState: Shared state tracker for llama.cpp backend (required)
+//   - warmupMgr: Optional warmup manager for cancelling warmup on user requests (pass nil to disable)
 //
 // Returns an error if the backend URL is invalid.
-func New(cfg *config.Config, watcher *template.Watcher, metrics *admin.Metrics, backendState *state.State) (*Proxy, error) {
+func New(cfg *config.Config, watcher *template.Watcher, metrics *admin.Metrics, backendState *state.State, warmupMgr WarmupManager) (*Proxy, error) {
 	// Parse the backend URL to ensure it's valid
 	backend, err := url.Parse(cfg.BackendURL)
 	if err != nil {
@@ -71,12 +84,13 @@ func New(cfg *config.Config, watcher *template.Watcher, metrics *admin.Metrics, 
 
 	// Create the proxy instance
 	p := &Proxy{
-		config:       cfg,
-		backend:      backend,
-		watcher:      watcher,
-		metrics:      metrics,
-		backendState: backendState,
-		running:      false,
+		config:        cfg,
+		backend:       backend,
+		watcher:       watcher,
+		metrics:       metrics,
+		backendState:  backendState,
+		warmupManager: warmupMgr,
+		running:       false,
 	}
 
 	// Create the reverse proxy using stdlib's httputil.ReverseProxy.
@@ -271,6 +285,16 @@ func (p *Proxy) IsRunning() bool {
 //
 // Template injection only affects request; responses stream through unchanged.
 func (p *Proxy) handleChatCompletion(w http.ResponseWriter, r *http.Request) {
+	// PRIORITY HANDLING: User requests take priority over warmup operations
+	// If a warmup is currently in progress, cancel it to ensure the user request
+	// gets processed immediately without waiting
+	if p.warmupManager != nil && p.warmupManager.IsWarmupInProgress() {
+		warmupPrefix := p.warmupManager.GetWarmupPrefix()
+		if p.warmupManager.CancelWarmup() {
+			log.Printf("INFO: Cancelled warmup for %s to prioritize user request", warmupPrefix)
+		}
+	}
+
 	// Read the entire request body
 	// This is safe because chat completion requests are typically small (< 100KB)
 	bodyBytes, err := io.ReadAll(r.Body)

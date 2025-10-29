@@ -2,6 +2,7 @@ package warmup
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,6 +32,12 @@ type Manager struct {
 	running bool
 	stopCh  chan struct{}
 	doneCh  chan struct{}
+
+	// Warmup cancellation support
+	warmupMu          sync.RWMutex
+	warmupInProgress  bool
+	warmupPrefix      string        // Which prefix is currently warming up
+	warmupCancelFunc  context.CancelFunc // Function to cancel in-progress warmup
 }
 
 // New creates a new warmup manager
@@ -82,6 +89,44 @@ func (m *Manager) Stop() {
 	log.Printf("Warmup manager stopped")
 }
 
+// CancelWarmup attempts to cancel an in-progress warmup operation.
+// This is called by the proxy when a user request arrives and needs priority.
+// Returns true if a warmup was cancelled, false if no warmup was in progress.
+func (m *Manager) CancelWarmup() bool {
+	m.warmupMu.Lock()
+	defer m.warmupMu.Unlock()
+
+	if !m.warmupInProgress {
+		return false
+	}
+
+	log.Printf("Cancelling in-progress warmup for %s (user request has priority)", m.warmupPrefix)
+
+	// Call the cancel function to abort the HTTP request
+	if m.warmupCancelFunc != nil {
+		m.warmupCancelFunc()
+	}
+
+	// Record cancellation metric
+	m.metrics.RecordWarmupCancellation(m.warmupPrefix)
+
+	return true
+}
+
+// IsWarmupInProgress returns true if a warmup operation is currently running
+func (m *Manager) IsWarmupInProgress() bool {
+	m.warmupMu.RLock()
+	defer m.warmupMu.RUnlock()
+	return m.warmupInProgress
+}
+
+// GetWarmupPrefix returns the prefix currently being warmed up (or empty if none)
+func (m *Manager) GetWarmupPrefix() string {
+	m.warmupMu.RLock()
+	defer m.warmupMu.RUnlock()
+	return m.warmupPrefix
+}
+
 // checkLoop is the background goroutine that periodically checks for template changes
 func (m *Manager) checkLoop() {
 	defer close(m.doneCh)
@@ -128,12 +173,18 @@ func (m *Manager) checkAndWarmup() {
 	// Warmup each changed template
 	for _, prefix := range changedPrefixes {
 		if err := m.warmupTemplate(prefix); err != nil {
+			// Check if error was due to cancellation
+			if err.Error() == "warmup cancelled" {
+				log.Printf("Warmup for %s was cancelled (user request had priority)", prefix)
+				// Don't mark as warmed up - will retry on next check cycle
+				continue
+			}
 			log.Printf("ERROR: Failed to warmup template %s: %v", prefix, err)
 			// Continue with next template, will retry on next check cycle
 			continue
 		}
 
-		// Mark as warmed up
+		// Mark as warmed up only if warmup completed successfully
 		m.watcher.MarkWarmedUp(prefix)
 		log.Printf("Template %s warmup complete", prefix)
 	}
@@ -142,6 +193,26 @@ func (m *Manager) checkAndWarmup() {
 // warmupTemplate executes the warmup sequence for a single template
 func (m *Manager) warmupTemplate(prefix string) error {
 	log.Printf("Starting warmup for %s", prefix)
+
+	// Create cancellable context for this warmup
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Track warmup state
+	m.warmupMu.Lock()
+	m.warmupInProgress = true
+	m.warmupPrefix = prefix
+	m.warmupCancelFunc = cancel
+	m.warmupMu.Unlock()
+
+	// Clean up warmup state when done
+	defer func() {
+		m.warmupMu.Lock()
+		m.warmupInProgress = false
+		m.warmupPrefix = ""
+		m.warmupCancelFunc = nil
+		m.warmupMu.Unlock()
+	}()
 
 	// Track warmup duration
 	startTime := time.Now()
@@ -179,8 +250,14 @@ func (m *Manager) warmupTemplate(prefix string) error {
 		return fmt.Errorf("failed to process template: %w", err)
 	}
 
-	// Step 4: Send warmup request to llama.cpp
-	if err := m.sendWarmupRequest(prefix, warmupContent); err != nil {
+	// Step 4: Send warmup request to llama.cpp with cancellation support
+	if err := m.sendWarmupRequest(ctx, prefix, warmupContent); err != nil {
+		// Check if we were cancelled
+		if ctx.Err() == context.Canceled {
+			log.Printf("Warmup for %s was cancelled", prefix)
+			// Don't record error or update state - cancellation is expected
+			return fmt.Errorf("warmup cancelled")
+		}
 		m.metrics.RecordWarmupError(prefix, "completion_failed")
 		return fmt.Errorf("warmup request failed: %w", err)
 	}
@@ -280,7 +357,8 @@ func (m *Manager) saveKVCache(prefix, filename string) error {
 }
 
 // sendWarmupRequest sends a chat completion request with the warmup content
-func (m *Manager) sendWarmupRequest(prefix, content string) error {
+// The context allows the request to be cancelled if a user request arrives
+func (m *Manager) sendWarmupRequest(ctx context.Context, prefix, content string) error {
 	url := fmt.Sprintf("%s/v1/chat/completions", m.backendURL)
 
 	// Build minimal warmup request
@@ -304,7 +382,8 @@ func (m *Manager) sendWarmupRequest(prefix, content string) error {
 
 	startTime := time.Now()
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	// Create request with cancellable context
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -312,6 +391,10 @@ func (m *Manager) sendWarmupRequest(prefix, content string) error {
 
 	resp, err := m.client.Do(req)
 	if err != nil {
+		// Check if error was due to context cancellation
+		if ctx.Err() == context.Canceled {
+			return fmt.Errorf("request cancelled: %w", ctx.Err())
+		}
 		return fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()

@@ -78,6 +78,10 @@ type Metrics struct {
 	// Structure: KVCacheRestores[prefix][status] = count
 	// Status values: "success", "not_found", "error"
 	KVCacheRestores map[string]map[string]int64
+
+	// WarmupCancellations tracks warmup operations cancelled due to user requests
+	// Structure: WarmupCancellations[prefix] = count
+	WarmupCancellations map[string]int64
 }
 
 // NewMetrics creates a new Metrics instance.
@@ -91,6 +95,7 @@ func NewMetrics() *Metrics {
 		WarmupDurationCount: make(map[string]int64),
 		KVCacheSaves:        make(map[string]int64),
 		KVCacheRestores:     make(map[string]map[string]int64),
+		WarmupCancellations: make(map[string]int64),
 	}
 }
 
@@ -170,6 +175,15 @@ func (m *Metrics) RecordKVCacheRestore(prefix string, status string) {
 		m.KVCacheRestores[prefix] = make(map[string]int64)
 	}
 	m.KVCacheRestores[prefix][status]++
+}
+
+// RecordWarmupCancellation records a warmup operation that was cancelled
+// because a user request arrived and needed priority.
+// prefix: The template prefix (e.g., "@code")
+func (m *Metrics) RecordWarmupCancellation(prefix string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.WarmupCancellations[prefix]++
 }
 
 // GetSnapshot returns a read-only snapshot of the current metrics.
@@ -441,6 +455,16 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			for status, count := range statuses {
 				fmt.Fprintf(w, "bioproxy_kv_cache_restores_total{prefix=\"%s\",status=\"%s\"} %d\n", prefix, status, count)
 			}
+		}
+		fmt.Fprintf(w, "\n")
+	}
+
+	// Write metric: bioproxy_warmup_cancellations_total
+	if len(s.metrics.WarmupCancellations) > 0 {
+		fmt.Fprintf(w, "# HELP bioproxy_warmup_cancellations_total Number of warmup operations cancelled due to user requests\n")
+		fmt.Fprintf(w, "# TYPE bioproxy_warmup_cancellations_total counter\n")
+		for prefix, count := range s.metrics.WarmupCancellations {
+			fmt.Fprintf(w, "bioproxy_warmup_cancellations_total{prefix=\"%s\"} %d\n", prefix, count)
 		}
 		fmt.Fprintf(w, "\n")
 	}
