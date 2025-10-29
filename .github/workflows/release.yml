@@ -6,6 +6,10 @@ on:
     tags:
       - 'v*'
 
+# Grant write permissions for creating releases and uploading assets
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build Release Binaries
