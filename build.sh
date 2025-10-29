@@ -44,8 +44,9 @@ build_platform() {
 }
 
 # Build for requested platforms
-build_platform "darwin" "arm64"   # Apple Silicon (M1/M2/M3)
+build_platform "darwin" "arm64"   # Apple Silicon (M1/M2/M3/M4)
 build_platform "linux" "arm64"    # Linux ARM64 (aarch64)
+build_platform "linux" "amd64"    # Linux x86_64
 
 echo -e "${GREEN}Build complete!${NC}"
 echo ""
